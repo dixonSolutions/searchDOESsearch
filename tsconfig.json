@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": false,
+    "allowSyntheticDefaultImports": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "paths": {
+      "gi://Gio":     ["./node_modules/@girs/gio-2.0/gio-2.0.d.ts"],
+      "gi://GLib":    ["./node_modules/@girs/glib-2.0/glib-2.0.d.ts"],
+      "gi://GObject": ["./node_modules/@girs/gobject-2.0/gobject-2.0.d.ts"],
+      "gi://St":      ["./node_modules/@girs/st-17/st-17.d.ts"],
+      "gi://Clutter": ["./node_modules/@girs/clutter-17/clutter-17.d.ts"],
+      "gi://*":       ["./node_modules/@girs/*/index.d.ts"],
+      "resource:///org/gnome/shell/extensions/extension.js": [
+        "./node_modules/@girs/gnome-shell/src/extensions/extension.d.ts"
+      ],
+      "resource:///org/gnome/shell/ui/main.js": [
+        "./node_modules/@girs/gnome-shell/src/ui/main.d.ts"
+      ],
+      "resource://*": ["./node_modules/@girs/gnome-shell/src/*"]
+    },
+    "types": ["@girs/gjs"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

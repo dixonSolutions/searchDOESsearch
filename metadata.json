@@ -1,0 +1,10 @@
+{
+  "name": "Search Does Search",
+  "description": "Intercepts searches in the GNOME Activities bar and shows a result you can open in your default browser — instead of the browser hijacking your search.",
+  "uuid": "search-does-search@searchdoessearch.github.io",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1,
+  "version-name": "1.0.0",
+  "url": "https://github.com/searchdoessearch/search-does-search",
+  "settings-schema": "org.gnome.shell.extensions.search-does-search"
+}

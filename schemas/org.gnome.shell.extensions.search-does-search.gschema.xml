@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.search-does-search"
+          path="/org/gnome/shell/extensions/search-does-search/">
+
+    <key name="search-engine" type="s">
+      <default>'duckduckgo'</default>
+      <summary>Default search engine</summary>
+      <description>
+        The search engine used to build the query URL.
+        Accepted values: 'duckduckgo', 'google', 'brave', 'bing', 'startpage'.
+      </description>
+    </key>
+
+    <key name="show-keyboard-shortcut" type="b">
+      <default>true</default>
+      <summary>Show keyboard shortcut hint in result</summary>
+      <description>
+        Whether to show the keyboard shortcut hint in the search result description.
+      </description>
+    </key>
+
+    <key name="result-position" type="i">
+      <default>0</default>
+      <summary>Result sort priority</summary>
+      <description>
+        Lower values push the result toward the top of the search results list.
+      </description>
+    </key>
+
+  </schema>
+</schemalist>

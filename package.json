@@ -1,0 +1,20 @@
+{
+  "name": "search-does-search",
+  "version": "1.0.0",
+  "description": "GNOME Shell extension that shows web search results and opens them in your default browser.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && npm run compile",
+    "compile": "node scripts/build.mjs",
+    "watch": "tsc --watch --noEmit",
+    "pack": "gnome-extensions pack dist/ --force",
+    "install-ext": "gnome-extensions install dist/ --force && gnome-extensions enable search-does-search@searchdoessearch.github.io",
+    "clean": "rm -rf dist/",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@girs/gnome-shell": "^49.0.0",
+    "typescript": "^5.6.0"
+  }
+}
