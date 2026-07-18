@@ -1,0 +1,63 @@
+name: Build and release GNOME extension
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish_ego:
+        description: Upload to extensions.gnome.org (requires EGO secrets)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install --yes gnome-shell libglib2.0-bin
+      - run: npm ci
+      - run: npm run lint
+      - run: make pack
+      - name: Verify release contents
+        run: |
+          unzip -l search-does-search@searchdoessearch.github.io.shell-extension.zip > contents.txt
+          for file in extension.js searchProvider.js browserLauncher.js webSearch.js metadata.json schemas/org.gnome.shell.extensions.search-does-search.gschema.xml; do
+            grep -F "$file" contents.txt
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-extension
+          path: search-does-search@searchdoessearch.github.io.shell-extension.zip
+          if-no-files-found: error
+      - name: Upload to extensions.gnome.org
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_ego
+        env:
+          EGO_USER: ${{ secrets.EGO_USER }}
+          EGO_PASSWORD: ${{ secrets.EGO_PASSWORD }}
+        run: printf '%s' "$EGO_PASSWORD" | gnome-extensions upload --user "$EGO_USER" --password-file=- --accept-tos search-does-search@searchdoessearch.github.io.shell-extension.zip
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-extension
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --generate-notes search-does-search@searchdoessearch.github.io.shell-extension.zip
