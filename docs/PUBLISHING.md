@@ -14,9 +14,9 @@ Extensions hosted at [extensions.gnome.org](https://extensions.gnome.org) go thr
 - [ ] Extension enables and disables cleanly without errors in `journalctl`
 - [ ] All references are nulled in `disable()` — no memory leaks
 - [ ] No use of `eval()`, `Function()`, or dynamic code execution
-- [ ] No network requests that could expose user data
+- [ ] Description discloses that fallback queries are sent to the configured engine
 - [ ] `Gio.AppInfo.launch_default_for_uri` used (not hardcoded browser paths)
-- [ ] Compiled `.gschema.xml` is included in the package
+- [ ] The `.gschema.xml` source is included; GNOME 44+ compiles it on install
 
 ### Recommended
 - [ ] Works on both X11 and Wayland
@@ -47,10 +47,19 @@ browserLauncher.js
 metadata.json
 schemas/
 schemas/org.gnome.shell.extensions.search-does-search.gschema.xml
-schemas/gschemas.compiled
 ```
 
 ---
+
+## Automated release pipeline
+
+Every pull request and commit to `main` runs `.github/workflows/release.yml`,
+type-checks the extension, builds the ZIP, verifies its runtime contents, and
+uploads the ZIP as a workflow artifact. A `v*` tag also creates a GitHub release.
+
+The workflow can upload to EGO when manually dispatched with `publish_ego`
+enabled. Configure repository secrets `EGO_USER` and `EGO_PASSWORD` first. The
+upload accepts the EGO terms of service and still enters GNOME's manual review.
 
 ## Submit to extensions.gnome.org
 
@@ -117,6 +126,6 @@ git push origin v1.0.0
 |---|---|
 | Accessing `_private` GNOME Shell members | Use only public API |
 | `disable()` doesn't clean up properly | Null all stored references and disconnect all signals |
-| Missing `gschemas.compiled` | Run `glib-compile-schemas schemas/` before packing |
+| Missing schema XML | Pack with `gnome-extensions pack --schema=...` |
 | Using deprecated APIs | Check the GNOME Shell changelog for your target versions |
 | Hardcoded paths or assumptions | Use GIO APIs; never assume `/usr/bin/firefox` etc. |

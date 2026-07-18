@@ -9,11 +9,13 @@ When you type in the Activities overlay, instead of your browser automatically h
 ## Features
 
 - Intercepts queries in the GNOME Activities search bar
-- Shows a clean result card with the query and target URL
+- Renders up to five real web results with Chrome/Chromium's Blink engine
+- Only searches the web when apps, files, and other system providers find nothing
+- Uses native GNOME result cards, inheriting the system light/dark theme
 - Opens the search in your **default browser** (Firefox, Chrome, Brave, Chromium — anything)
-- Supports multiple search engines: DuckDuckGo, Google, Brave Search, Bing, Startpage
+- Supports DuckDuckGo (default) and Google result parsing
 - Engine preference is configurable via GSettings
-- Zero network requests from the extension itself — privacy-safe
+- Cancels stale renders as the query changes and limits each render to eight seconds
 - Works on X11 and Wayland
 - Compatible with GNOME Shell 45, 46, 47
 
@@ -23,6 +25,7 @@ When you type in the Activities overlay, instead of your browser automatically h
 
 - GNOME Shell 45 or later
 - Ubuntu 23.10+ / Fedora 39+ / any distro running GNOME 45+
+- Google Chrome or Chromium *(for rendering web results)*
 - Node.js 20+ *(for building from source)*
 
 ---
@@ -60,8 +63,13 @@ make enable
 To change the search engine:
 ```bash
 gsettings set org.gnome.shell.extensions.search-does-search search-engine google
-# Options: duckduckgo, google, brave, bing, startpage
+# Options: duckduckgo, google
 ```
+
+The query is sent to the configured search engine only after GNOME's local and
+application providers return no results. Rich result cards are rendered by a
+temporary headless browser profile; activating a card opens its URL in the
+system default browser.
 
 ---
 

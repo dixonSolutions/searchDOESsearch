@@ -49,7 +49,10 @@ restart:
 pack: build
 	@echo "→ Packaging extension..."
 	gnome-extensions pack $(DIST) \
-		--extra-source=schemas \
+		--schema=schemas/org.gnome.shell.extensions.search-does-search.gschema.xml \
+		--extra-source=browserLauncher.js \
+		--extra-source=searchProvider.js \
+		--extra-source=webSearch.js \
 		--force \
 		--out-dir=.
 	@echo "✓ Package created — ready to upload to extensions.gnome.org"
