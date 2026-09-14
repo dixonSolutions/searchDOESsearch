@@ -65,6 +65,41 @@
   /* height is set in code (pageHeight()); width fills the card */
 }
 
+/* ── skeleton: stands in while the next page loads ──────────────────────── */
+/* Same 880px column the rendered results use, so nothing jumps when the real
+   page replaces it. Neutral grey at low alpha: correct on light and dark. */
+.sds-skeleton {
+  padding: 18px 0 0 0;
+}
+.sds-skeleton-column {
+  max-width: 880px;
+  spacing: 26px;
+  padding: 0 20px;
+}
+.sds-skeleton-row {
+  spacing: 9px;
+}
+.sds-skeleton-bar {
+  height: 11px;
+  border-radius: 6px;
+  background-color: rgba(127, 127, 127, 0.28);
+}
+.sds-skeleton-title {
+  width: 340px;
+  height: 14px;
+  background-color: rgba(127, 127, 127, 0.38);
+}
+.sds-skeleton-url {
+  width: 190px;
+  height: 9px;
+}
+.sds-skeleton-line {
+  width: 820px;
+}
+.sds-skeleton-line-short {
+  width: 560px;
+}
+
 /* ── notice (blocked / error) ───────────────────────────────────────────── */
 .sds-notice {
   padding: 48px 24px;

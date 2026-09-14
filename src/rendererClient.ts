@@ -27,7 +27,8 @@ export type KeyKind = 'press' | 'release';
 
 export interface RendererListener {
   onFrame(frame: Frame): void;
-  onState(state: RendererState, detail: string): void;
+  /** `query` is the search the state belongs to; anything else is stale. */
+  onState(state: RendererState, detail: string, query: string): void;
   onLaunched(url: string): void;
   onNav(nav: Nav): void;
   /** A link this view will not open at all; the argument is its scheme. */
@@ -75,6 +76,11 @@ export class RendererClient {
   /** Start the renderer process before it is needed, so the first search is not also a cold start. */
   prewarm(): void {
     this._ensureRunning();
+  }
+
+  /** Load what is showing again — the results page, or the followed page. */
+  reload(): void {
+    this._call('Reload', null);
   }
 
   /** One step back towards the results page; ignored at depth 0. */
@@ -249,8 +255,8 @@ export class RendererClient {
         break;
       }
       case 'State': {
-        const [state, detail] = params.deepUnpack() as [string, string];
-        this._emitState(state as RendererState, detail);
+        const [state, detail, query] = params.deepUnpack() as [string, string, string];
+        this._emitState(state as RendererState, detail, query);
         break;
       }
       case 'Launched': {
@@ -273,7 +279,7 @@ export class RendererClient {
     }
   }
 
-  private _emitState(state: RendererState, detail: string): void {
-    for (const l of this._listeners) l.onState(state, detail);
+  private _emitState(state: RendererState, detail: string, query = ''): void {
+    for (const l of this._listeners) l.onState(state, detail, query);
   }
 }

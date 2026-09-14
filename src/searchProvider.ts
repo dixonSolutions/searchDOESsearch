@@ -34,14 +34,14 @@ export interface SearchProviderOptions {
  * page only once they have held still this long. Meanwhile the view keeps the
  * previous page and shows the new terms in its header.
  *
- * 200ms is about where a pause stops feeling like part of the keystroke, and
- * the renderer is already warm (the overview prewarms it), so the load starts
- * while the user is still lifting their finger. The floor below then keeps a
- * fast typist from queueing a load per word.
+ * The page is not shown until it belongs to the terms on screen, so waiting
+ * longer buys nothing: the sooner the load starts, the sooner the skeleton is
+ * replaced by real results. 120ms is short enough to overlap the tail of a
+ * keystroke burst; the floor keeps a fast typist from queueing a load per word.
  */
-const RENDER_DEBOUNCE_MS = 200;
+const RENDER_DEBOUNCE_MS = 120;
 /** Never start two page loads closer together than this. */
-const RENDER_MIN_INTERVAL_MS = 400;
+const RENDER_MIN_INTERVAL_MS = 300;
 
 const PAGE_RESULT_ID = 'sds:page';
 const BROWSER_URLS: Record<string, (q: string) => string> = {

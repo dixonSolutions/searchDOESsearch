@@ -134,6 +134,7 @@ export const INTERFACE_XML = `
     <method name="SetLinkMode">
       <arg type="s" name="mode" direction="in"/>
     </method>
+    <method name="Reload"/>
     <method name="Refresh"/>
     <method name="Quit"/>
     <signal name="Frame">
@@ -146,6 +147,7 @@ export const INTERFACE_XML = `
     <signal name="State">
       <arg type="s" name="state"/>
       <arg type="s" name="detail"/>
+      <arg type="s" name="query"/>
     </signal>
     <signal name="Launched">
       <arg type="s" name="url"/>
@@ -462,6 +464,7 @@ class Renderer {
     this._pendingDepth = 0;
     this._goingBack = false;
     this._handedOff = false;
+    this._stateDetail = '';
     this._motion = null;
     this._motionTimer = 0;
     this._buttonsDown = 0;
@@ -598,9 +601,15 @@ class Renderer {
 
   // --- state & navigation ----------------------------------------------------
 
+  /**
+   * Every state names the query it belongs to. Without it the Shell cannot tell
+   * "the page you asked for is ready" from "the page you asked for two
+   * keystrokes ago is ready", and shows one query's results under another's.
+   */
   _setState(state, detail = '') {
     this._state = state;
-    this.emitSignal('State', new GLib.Variant('(ss)', [state, detail]));
+    this._stateDetail = detail;
+    this.emitSignal('State', new GLib.Variant('(sss)', [state, detail, this._query]));
   }
 
   _launch(url) {
@@ -1033,10 +1042,19 @@ class Renderer {
     this._keyEvent(type, keyval, keycode, state);
   }
 
+  /** Load the current page again: the results page, or the page followed to. */
+  Reload() {
+    this._touchIdle();
+    this._loading = true;
+    this._setState('loading', this._depth > 0 ? hostOf(this._web.get_uri() ?? '') : this._engine.label);
+    if (this._depth > 0) this._web.reload();
+    else if (this._query) this._web.load_uri(this._engine.serp(this._query));
+  }
+
   Refresh() {
     this._touchIdle();
     // Re-emit the current state so a newly created view can pick it up.
-    if (this._state) this._setState(this._state, this._engine.label);
+    if (this._state) this._setState(this._state, this._stateDetail ?? this._engine.label);
     this._emitNav();
     this._scheduleFrame();
   }
@@ -1091,8 +1109,11 @@ const renderer = new Renderer(exit);
 let owner = null;
 let ownerWatch = 0;
 const impl = {};
-for (const method of ['Search', 'Configure', 'Scroll', 'Pointer', 'Key',
-  'Back', 'OpenCurrent', 'SetLinkMode', 'Refresh', 'Quit']) {
+// Taken from the interface itself: a hand-written list next to the XML is a
+// list that drifts from it, and the symptom is a method the renderer implements
+// answering "no such method" on the bus.
+const METHODS = [...INTERFACE_XML.matchAll(/<method name="([^"]+)"/g)].map(m => m[1]);
+for (const method of METHODS) {
   impl[`${method}Async`] = (params, invocation) => {
     const sender = invocation.get_sender();
     if (owner === null) {

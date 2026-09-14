@@ -77,6 +77,13 @@ const SPINNER_DELAY_MS = 250;
 const DOUBLE_CLICK_MS = 400;
 /** How long a transient header message (a refused link) stays. */
 const MESSAGE_MS = 2500;
+/**
+ * A load that says nothing for this long is not coming: a dead renderer, a call
+ * that never reached it, a page that hangs. Without this the skeleton stays up
+ * for ever and the view looks broken with no way out — which is exactly how a
+ * refused D-Bus call hid itself during development.
+ */
+const LOAD_TIMEOUT_MS = 15000;
 /** Dim text, done with actor opacity: a hard-coded grey breaks on a user theme. */
 const DIM = 160;
 
@@ -304,6 +311,59 @@ class FrameActor extends St.Widget {
 });
 
 // ---------------------------------------------------------------------------
+// The skeleton: what the page area shows while the next one loads
+// ---------------------------------------------------------------------------
+
+/**
+ * Result-shaped placeholders, in the same column the real results land in, so
+ * the page does not jump when they arrive. It exists because the alternative —
+ * leaving the previous query's page on screen — showed one search's results
+ * under another search's terms, which is worse than showing nothing.
+ */
+export const Skeleton = GObject.registerClass(
+class Skeleton extends St.BoxLayout {
+  private _pulse: St.BoxLayout;
+
+  constructor() {
+    super({style_class: 'sds-skeleton', x_expand: true, y_expand: true, visible: false});
+    // One animated actor, not twenty: the pulse is on the column as a whole.
+    this._pulse = new St.BoxLayout({
+      style_class: 'sds-skeleton-column',
+      orientation: Clutter.Orientation.VERTICAL,
+      x_align: Clutter.ActorAlign.CENTER,
+      x_expand: true,
+    });
+    for (let i = 0; i < 5; i++) this._pulse.add_child(this._row());
+    this.add_child(this._pulse);
+  }
+
+  /** Title, url, and two lines of snippet — the shape of one result. */
+  private _row(): St.BoxLayout {
+    const row = new St.BoxLayout({style_class: 'sds-skeleton-row', orientation: Clutter.Orientation.VERTICAL});
+    const bar = (cls: string): St.Widget => new St.Widget({style_class: `sds-skeleton-bar ${cls}`});
+    row.add_child(bar('sds-skeleton-title'));
+    row.add_child(bar('sds-skeleton-url'));
+    row.add_child(bar('sds-skeleton-line'));
+    row.add_child(bar('sds-skeleton-line-short'));
+    return row;
+  }
+
+  start(): void {
+    if (this.visible) return;
+    this.show();
+    this._pulse.remove_all_transitions();
+    this._pulse.opacity = 90;
+    ease(this._pulse, {opacity: 200, duration: 700, autoReverse: true, repeatCount: -1});
+  }
+
+  stop(): void {
+    if (!this.visible) return;
+    this._pulse.remove_all_transitions();
+    this.hide();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // The back arrow, with how deep the user has gone
 // ---------------------------------------------------------------------------
 
@@ -388,10 +448,15 @@ class PageView extends St.BoxLayout {
   private _focusHint: St.Label;
   private _spinner: Spinner;
   private _spinnerTimer = 0;
+  private _loadTimer = 0;
   private _messageTimer = 0;
   private _message = '';
   private _open: St.Button;
+  private _refresh: St.Button;
   private _openShown = false;
+  private _skeleton: InstanceType<typeof Skeleton>;
+  /** The query the page on screen belongs to; '' while nothing valid is shown. */
+  private _pageQuery = '';
   private _back: InstanceType<typeof BackButton>;
   private _frame: InstanceType<typeof FrameActor>;
   private _notice: St.BoxLayout;
@@ -441,6 +506,14 @@ class PageView extends St.BoxLayout {
     });
     this._open.connect('clicked', () => this._openCurrentInBrowser());
     header.add_child(this._open);
+    this._refresh = new St.Button({
+      style_class: 'icon-button sds-refresh',
+      can_focus: true,
+      accessible_name: 'Load this page again',
+      child: new St.Icon({icon_name: 'view-refresh-symbolic', icon_size: 16}),
+    });
+    this._refresh.connect('clicked', () => this._reload());
+    header.add_child(this._refresh);
     this._back = new BackButton(() => this._goBack());
     header.add_child(this._back);
     this.add_child(header);
@@ -461,6 +534,9 @@ class PageView extends St.BoxLayout {
       this._hint.visible = this.has_style_pseudo_class('selected');
     });
     this.add_child(this._frame);
+    this._skeleton = new Skeleton();
+    this._skeleton.set_height(pageHeight());
+    this.add_child(this._skeleton);
 
     // --- notice (blocked engine / load error) ---
     this._notice = new St.BoxLayout({style_class: 'sds-notice', orientation: Clutter.Orientation.VERTICAL, x_expand: true, x_align: Clutter.ActorAlign.CENTER, visible: false});
@@ -480,7 +556,7 @@ class PageView extends St.BoxLayout {
 
     this._listener = {
       onFrame: frame => this._frame.showFrame(frame),
-      onState: (state, detail) => this._onState(state, detail),
+      onState: (state, detail, query) => this._onState(state, detail, query),
       onLaunched: () => Main.overview.hide(),
       onNav: nav => this._onNav(nav),
       onRefused: scheme => this._flash(`${scheme}: links are only followed for web pages`),
@@ -495,11 +571,20 @@ class PageView extends St.BoxLayout {
 
   get query(): string { return this._query; }
 
-  /** Called by the provider whenever the overview's terms change. */
+  /**
+   * Called by the provider whenever the overview's terms change — on every
+   * keystroke, well before anything is loaded for them. The page on screen
+   * belongs to whichever query produced it: if that is still this one, it stays
+   * (deleting a character and retyping it shows the same results at once); if
+   * it is not, it goes, and the skeleton stands in until the new one arrives.
+   */
   setQuery(query: string): void {
     if (query === this._query) return;
     this._query = query;
     this.metaInfo.name = query;
+    if (this._nav.depth === 0 && !this._notice.visible) {
+      this._showPage(query !== '' && query === this._pageQuery);
+    }
     this._updateStatus();
   }
 
@@ -512,8 +597,32 @@ class PageView extends St.BoxLayout {
     this.setQuery(query);
     if (reloading) {
       this._state = 'loading';
+      // What is on screen belongs to the previous search. Take it away now
+      // rather than leaving one query's results sitting under another's terms.
+      this._pageQuery = '';
+      this._showPage(false);
       this._updateStatus();
     }
+  }
+
+  /** Show either the page or the skeleton — never a page from another query. */
+  private _showPage(ready: boolean): void {
+    if (ready) {
+      this._skeleton.stop();
+      this._frame.visible = true;
+    } else {
+      this._frame.visible = false;
+      this._skeleton.start();
+    }
+  }
+
+  private _reload(): void {
+    this._notice.visible = false;
+    if (this._nav.depth === 0) this._pageQuery = '';
+    this._state = 'loading';
+    this._showPage(this._nav.depth > 0);
+    this._updateStatus();
+    this._deps.renderer.reload();
   }
 
   /**
@@ -579,7 +688,10 @@ class PageView extends St.BoxLayout {
   /** True while the user is on a page they followed, not on the results page. */
   get navigated(): boolean { return this._nav.depth > 0; }
 
-  private _onState(state: RendererState, detail: string): void {
+  private _onState(state: RendererState, detail: string, query: string): void {
+    // A load that finished for terms the user has already moved past says
+    // nothing about what they are waiting for now.
+    if (query && this._query && query !== this._query) return;
     this._state = state;
     this._updateStatus();
     const engine = engineFor(this._engineId);
@@ -602,7 +714,9 @@ class PageView extends St.BoxLayout {
           ['Open in browser', () => this.activate()]]);
     } else {
       this._notice.visible = false;
-      this._frame.visible = true;
+      // Ready means this query's page is painted; loading keeps the skeleton up.
+      if (state === 'ready') this._pageQuery = this._query;
+      this._showPage(state === 'ready' || this._nav.depth > 0);
     }
   }
 
@@ -642,6 +756,7 @@ class PageView extends St.BoxLayout {
   /** Shown only once a load has taken long enough to be worth reporting. */
   private _updateSpinner(): void {
     const loading = this._state === 'loading';
+    this._armLoadTimeout(loading);
     if (!loading) {
       if (this._spinnerTimer) GLib.source_remove(this._spinnerTimer);
       this._spinnerTimer = 0;
@@ -652,6 +767,26 @@ class PageView extends St.BoxLayout {
     this._spinnerTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SPINNER_DELAY_MS, () => {
       this._spinnerTimer = 0;
       if (this._state === 'loading') this._spinner.play();
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  /** Give up on a load that has gone quiet, rather than leaving a skeleton up. */
+  private _armLoadTimeout(loading: boolean): void {
+    if (!loading) {
+      if (this._loadTimer) GLib.source_remove(this._loadTimer);
+      this._loadTimer = 0;
+      return;
+    }
+    if (this._loadTimer) return;
+    this._loadTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, LOAD_TIMEOUT_MS, () => {
+      this._loadTimer = 0;
+      if (this._state !== 'loading') return GLib.SOURCE_REMOVE;
+      this._state = 'error';
+      this._showNotice('This is taking too long',
+        'The page renderer has not answered. It may have stopped; trying again starts it.',
+        [['Try again', () => this._reload()],
+          ['Open in browser', () => this.activate()]]);
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -679,6 +814,7 @@ class PageView extends St.BoxLayout {
       this._noticeButtons.add_child(button);
     }
     this._frame.visible = false;
+    this._skeleton.stop();
     this._notice.visible = true;
   }
 
@@ -691,8 +827,9 @@ class PageView extends St.BoxLayout {
         break;
       case 'engine':
         this._notice.visible = false;
-        this._frame.visible = true;
+        this._pageQuery = '';
         this._state = 'loading';
+        this._showPage(false);
         this._updateStatus();
         if (this._query) this._deps.renderer.search(this._query, this._engineId);
         break;
@@ -703,8 +840,9 @@ class PageView extends St.BoxLayout {
 
   private _onDestroy(): void {
     if (this._spinnerTimer) GLib.source_remove(this._spinnerTimer);
+    if (this._loadTimer) GLib.source_remove(this._loadTimer);
     if (this._messageTimer) GLib.source_remove(this._messageTimer);
-    this._spinnerTimer = this._messageTimer = 0;
+    this._spinnerTimer = this._loadTimer = this._messageTimer = 0;
     this._deps.renderer.removeListener(this._listener);
     if (this._settingsId) this._deps.settings.disconnect(this._settingsId);
     this._settingsId = 0;
