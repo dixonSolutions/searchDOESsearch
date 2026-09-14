@@ -3,30 +3,74 @@
   <schema id="org.gnome.shell.extensions.search-does-search"
           path="/org/gnome/shell/extensions/search-does-search/">
 
-    <key name="search-engine" type="s">
+    <key name="searxng-instance" type="s">
+      <default>'http://localhost:8888'</default>
+      <summary>SearXNG instance address</summary>
+      <description>
+        Origin of the SearXNG instance queried for the sidebar's link list, for
+        example 'http://localhost:8888'. Only http and https addresses are accepted;
+        any path, query, or fragment is ignored. The instance must have 'json'
+        listed under search.formats in its settings.yml.
+
+        The list comes from SearXNG rather than direct scraping because search
+        engines gate their result pages against non-browser clients. SearXNG spreads
+        a query across many upstreams and degrades gracefully when one refuses.
+      </description>
+    </key>
+
+    <!-- Results page: the engine's page is rendered by panel/sds-renderer.js (a
+         separate process — GNOME Shell cannot host WebKit) and shown inside the
+         overview by the extension. These keys are read by the page view and the
+         prefs UI. The key names keep their historical "panel-" prefix. -->
+
+    <key name="panel-engine" type="s">
+      <choices>
+        <choice value="duckduckgo"/>
+        <choice value="google"/>
+      </choices>
       <default>'duckduckgo'</default>
-      <summary>Default search engine</summary>
+      <summary>Results page engine</summary>
       <description>
-        The search engine used to build the query URL.
-        Accepted values for rendered results: 'duckduckgo' and 'google'.
+        Which engine's results page is rendered. DuckDuckGo's HTML endpoint
+        renders reliably. Google is offered because its results are wanted, but it
+        answers many networks (VPN exits in particular) with its "unusual traffic"
+        check; the page detects that and reports it instead of trying to get past it.
       </description>
     </key>
 
-    <key name="browser-command" type="s">
-      <default>''</default>
-      <summary>Chrome or Chromium executable</summary>
+    <key name="panel-sidebar-visible" type="b">
+      <default>false</default>
+      <summary>Show the results sidebar</summary>
       <description>
-        Executable used for headless HTML rendering. Leave empty for automatic detection.
+        Whether the compact list of result links is shown beside the rendered page.
+        Off by default: the page already lists the results, so the sidebar is
+        supplementary. The sidebar button and F9 toggle the same key, so the choice
+        persists.
       </description>
     </key>
 
-    <key name="max-results" type="i">
-      <default>3</default>
-      <range min="1" max="5"/>
-      <summary>Maximum web results</summary>
-      <description>
-        Maximum rendered results shown when GNOME has no system results.
-      </description>
+    <key name="panel-sidebar-position" type="s">
+      <choices>
+        <choice value="left"/>
+        <choice value="right"/>
+      </choices>
+      <default>'left'</default>
+      <summary>Sidebar position</summary>
+      <description>Which side of the rendered page the sidebar is docked to.</description>
+    </key>
+
+    <key name="panel-sidebar-width" type="i">
+      <default>272</default>
+      <range min="180" max="480"/>
+      <summary>Sidebar width</summary>
+      <description>Width of the sidebar in logical pixels.</description>
+    </key>
+
+    <key name="panel-sidebar-limit" type="i">
+      <default>10</default>
+      <range min="3" max="20"/>
+      <summary>Sidebar result count</summary>
+      <description>Maximum number of links listed in the sidebar.</description>
     </key>
 
   </schema>

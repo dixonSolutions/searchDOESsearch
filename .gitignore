@@ -1,3 +1,7 @@
 node_modules/
 dist/
+native/build/
 *.shell-extension.zip
+
+# Agent scratch space; debug logs here can contain queries the user typed.
+.cursor/

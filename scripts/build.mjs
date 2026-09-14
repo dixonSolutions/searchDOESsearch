@@ -10,7 +10,7 @@
  */
 
 import { execSync } from 'child_process';
-import { copyFileSync, mkdirSync, existsSync, rmSync, readdirSync } from 'fs';
+import { copyFileSync, cpSync, mkdirSync, existsSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 const UUID    = 'search-does-search@searchdoessearch.github.io';
@@ -52,6 +52,10 @@ copyFileSync(
   'schemas/org.gnome.shell.extensions.search-does-search.gschema.xml',
   join(OUT_DIR, 'schemas/org.gnome.shell.extensions.search-does-search.gschema.xml')
 );
+
+// The results panel is plain GJS (Gtk 3 + WebKit2, not the Shell's ES module
+// world), so it is shipped as-is rather than compiled from src/.
+cpSync('panel', join(OUT_DIR, 'panel'), { recursive: true });
 
 console.log(`\n✓ Build complete → ${OUT_DIR}`);
 console.log('  Run: make install   to install the extension locally');

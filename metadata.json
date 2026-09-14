@@ -1,6 +1,6 @@
 {
   "name": "Search Does Search",
-  "description": "Shows rendered Google or DuckDuckGo results only when GNOME has no matching apps, files, or other system results.",
+  "description": "Shows web results from your own SearXNG instance, only when GNOME has no matching apps, files, or other system results.",
   "uuid": "search-does-search@searchdoessearch.github.io",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/dixonSolutions/searchDOESsearch",
