@@ -11,11 +11,12 @@ import GLib from 'gi://GLib';
 /**
  * Reject anything that is not plain http(s).
  *
- * URLs reaching this module were scraped from a remote results page, so they are
- * attacker-influenced. webSearch already filters them, but this is the function
- * that actually hands a URI to the desktop's URI handler, so it re-checks rather
- * than trusting its caller: `file:`, `javascript:` or a custom scheme registered
- * by an installed app would otherwise be launchable from the overview.
+ * URLs reaching this module came from a remote results page, so they are
+ * attacker-influenced. The renderer already filters them (`isSafeHttpUrl` after
+ * `unwrapRedirect` in panel/sds-renderer.js), but this is the function that
+ * actually hands a URI to the desktop's URI handler, so it re-checks rather than
+ * trusting its caller: `file:`, `javascript:` or a custom scheme registered by an
+ * installed app would otherwise be launchable from the overview.
  */
 function isSafeHttpUrl(url: string): boolean {
   try {

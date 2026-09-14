@@ -24,9 +24,12 @@
  * fields, selection and focus behave exactly as they would in a visible WebKit
  * view — nothing is approximated through JavaScript.
  *
- * Navigation never happens in this view: the load we asked for and the engine's
- * own redirects render here; every other navigation (a clicked link, a popup) is
- * handed to the default browser, http(s) only, and reported with `Launched`.
+ * Navigation: the load we asked for and the engine's own redirects always render
+ * here. What happens to a clicked link depends on the link mode the Shell sets —
+ * `browser` hands it to the default browser (http(s) only) and reports it with
+ * `Launched`, `contained` follows it in this view and reports the new depth with
+ * `Nav`, so the Shell can offer a back arrow. Depth counts links followed since
+ * the results page; `Back` walks it down, and a new `Search` resets it to zero.
  *
  * Only the first D-Bus caller (the Shell) may drive the renderer; it exits when
  * that caller disappears, when asked, or after a long idle period.
@@ -83,6 +86,9 @@ const DEFAULT_HEIGHT = 600;
 // reading pixels, and never export more often than this.
 const FRAME_COALESCE_MS = 6;
 const FRAME_MIN_INTERVAL_MS = 16;
+// One more export this long after the last repaint, to catch a region WebKit
+// finished painting after it announced the damage.
+const FRAME_SETTLE_MS = 150;
 // Pointer motion is the only event the Shell can send hundreds of per second;
 // it is coalesced to the newest position at this rate.
 const MOTION_INTERVAL_MS = 24;
@@ -115,12 +121,18 @@ export const INTERFACE_XML = `
       <arg type="d" name="y" direction="in"/>
       <arg type="u" name="button" direction="in"/>
       <arg type="u" name="state" direction="in"/>
+      <arg type="u" name="clicks" direction="in"/>
     </method>
     <method name="Key">
       <arg type="s" name="kind" direction="in"/>
       <arg type="u" name="keyval" direction="in"/>
       <arg type="u" name="keycode" direction="in"/>
       <arg type="u" name="state" direction="in"/>
+    </method>
+    <method name="Back"/>
+    <method name="OpenCurrent"/>
+    <method name="SetLinkMode">
+      <arg type="s" name="mode" direction="in"/>
     </method>
     <method name="Refresh"/>
     <method name="Quit"/>
@@ -137,6 +149,14 @@ export const INTERFACE_XML = `
     </signal>
     <signal name="Launched">
       <arg type="s" name="url"/>
+    </signal>
+    <signal name="Nav">
+      <arg type="u" name="depth"/>
+      <arg type="s" name="title"/>
+      <arg type="s" name="uri"/>
+    </signal>
+    <signal name="Refused">
+      <arg type="s" name="scheme"/>
     </signal>
   </interface>
 </node>`;
@@ -155,12 +175,18 @@ const ENGINES = {
     label: 'DuckDuckGo',
     serp: q => `https://html.duckduckgo.com/html/?q=${enc(q)}`,
     hosts: /(^|\.)duckduckgo\.com$/i,
+    // WebKit URL patterns: the engine's own stylesheet is scoped to these, so a
+    // page the user followed renders as itself rather than as a mangled SERP.
+    match: ['*://*.duckduckgo.com/*'],
     blocked: () => null,
   },
   google: {
     label: 'Google',
     serp: q => `https://www.google.com/search?q=${enc(q)}`,
     hosts: /(^|\.)google\.[a-z.]+$/i,
+    // serp() always loads www.google.com; a country-domain redirect renders
+    // unstyled rather than mangled, which is the safe way round.
+    match: ['*://*.google.com/*'],
     // "Our systems have detected unusual traffic from your computer network."
     blocked: uri => (/\/sorry(\/|$)/.test(pathOf(uri)) ? 'unusual-traffic' : null),
   },
@@ -194,6 +220,18 @@ function hostOf(url) {
  * Same rule as src/browserLauncher.ts: only plain http(s) may be handed to the
  * desktop's URI handler. Everything reaching here came from a remote page.
  */
+/** A page's own plumbing, never something the user asked for. */
+const INTERNAL_SCHEMES = /^(about|blob|data|javascript|file)$/i;
+
+/** The navigation type of a decision, for the branches that read it before `action`. */
+function navTypeOf(decision) {
+  try {
+    return decision.get_navigation_action().get_navigation_type();
+  } catch {
+    return null;
+  }
+}
+
 function isSafeHttpUrl(url) {
   const scheme = parseUri(url)?.get_scheme();
   return scheme === 'http' || scheme === 'https';
@@ -320,7 +358,10 @@ function pageCss(engineId, t) {
   #main, #cnt, #rcnt, #center_col, #res, #search, #rso {
     margin: 0 !important; padding: 0 !important; max-width: none !important; width: auto !important;
   }
-  #rso { padding: 8px 16px 24px 16px !important; max-width: 760px; }
+  /* Centred: the frame is as wide as the overview card, and a column pinned to
+     its left edge reads as a mistake. 880px is 70-80 characters at 11pt — the
+     readable band — and leaves even margins instead of 40% dead space. */
+  #rso { padding: 10px 20px 24px 20px !important; max-width: 880px; margin: 0 auto !important; }
   #rso > div, .g { padding: 8px 10px !important; margin: 0 0 2px 0 !important; border-radius: 8px !important; }
   #rso > div:hover, .g:hover { background: ${hover} !important; }
   h3 { font-size: 1.05em !important; line-height: 1.35 !important; color: ${t.link} !important; }
@@ -342,10 +383,13 @@ function pageCss(engineId, t) {
     width: auto !important; max-width: none !important; min-width: 0 !important;
     padding: 0 !important; margin: 0 !important;
   }
-  #links { padding: 8px 16px 24px 16px !important; max-width: 760px; }
+  /* Centred: the frame is as wide as the overview card, and a column pinned to
+     its left edge reads as a mistake. 880px is 70-80 characters at 11pt — the
+     readable band — and leaves even margins instead of 40% dead space. */
+  #links { padding: 10px 20px 24px 20px !important; max-width: 880px; margin: 0 auto !important; }
   .results_links, .results_links_deep, .web-result { margin: 0 !important; padding: 0 !important; }
   .result {
-    padding: 8px 10px 9px 10px !important; margin: 0 0 2px 0 !important;
+    padding: 8px 12px 9px 12px !important; margin: 0 0 4px 0 !important;
     border: none !important; border-radius: 8px !important;
   }
   .result:hover { background: ${hover} !important; }
@@ -368,9 +412,10 @@ function pageCss(engineId, t) {
 // ---------------------------------------------------------------------------
 
 /**
- * Two alternating raw-RGBA files in the runtime dir. Each write goes to a temp
- * file and is renamed over the target, so the Shell either maps the previous
- * complete frame or the new one — never a mix.
+ * Two alternating raw-RGBA files in the runtime dir. The alternation is what
+ * keeps a reader safe: the Shell is told about frame N only once it is written,
+ * and the next write goes to the *other* file, so a slow reader still maps a
+ * complete frame rather than one being overwritten under it.
  */
 class FrameFiles {
   constructor() {
@@ -405,10 +450,18 @@ class Renderer {
     this._scale = 1;
     this._serial = 0;
     this._frameTimer = 0;
+    this._settleTimer = 0;
     this._lastFrameAt = 0;
     this._frames = new FrameFiles();
     this._blocked = false;
     this._loading = false;
+    // Contained browsing: links followed since the results page. 0 means the
+    // results page itself, which is what the Shell shows no back arrow for.
+    this._linkMode = 'contained';
+    this._depth = 0;
+    this._pendingDepth = 0;
+    this._goingBack = false;
+    this._handedOff = false;
     this._motion = null;
     this._motionTimer = 0;
     this._buttonsDown = 0;
@@ -435,12 +488,37 @@ class Renderer {
     this._web.connect('load-changed', (_v, ev) => this._onLoadChanged(ev));
     this._web.connect('load-failed', (_v, _ev, _uri, err) => {
       if (err.matches(WebKit2.NetworkError, WebKit2.NetworkError.CANCELLED)) return true;
+      // Our own doing: a download handed to the browser, or a policy we set.
+      if (this._handedOff || err.matches(WebKit2.PolicyError, WebKit2.PolicyError.CANNOT_SHOW_MIME_TYPE)
+          || err.matches(WebKit2.PolicyError, WebKit2.PolicyError.FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE)) {
+        this._handedOff = false;
+        this._pendingDepth = 0;
+        this._loading = false;
+        return true;
+      }
       this._loading = false;
-      this._setState('error', `${this._engine.label} could not be loaded: ${err.message}`);
+      // The step was taken off the counter before the navigation was known to
+      // work; if it did not, put it back, or the user is left on a page with no
+      // way back from it.
+      if (this._goingBack) {
+        this._goingBack = false;
+        this._depth += 1;
+        this._emitNav();
+      }
+      // Name what actually failed: the engine at the results page, the site the
+      // user followed once they are deeper than that.
+      const what = this._depth > 0 || this._pendingDepth > 0
+        ? (hostOf(this._web.get_uri() ?? '') || 'The page') : this._engine.label;
+      this._pendingDepth = 0;
+      this._setState('error', `${what} could not be loaded: ${err.message}`);
       return true;
     });
     this._web.connect('create', (_v, navAction) => {
-      this._launch(navAction.get_request().get_uri());
+      const uri = navAction.get_request().get_uri();
+      // A popup or target=_blank link. There is no second view to open it in,
+      // so it either continues here or goes to the browser, like any other link.
+      if (this._linkMode === 'contained' && isSafeHttpUrl(uri)) this._follow(uri);
+      else this._launch(uri);
       return null;
     });
     // Every repaint of the off-screen window is a candidate frame.
@@ -459,6 +537,17 @@ class Renderer {
     } catch { /* no desktop schema: GTK's own theme setting decides */ }
     this.window.get_style_context().connect('changed', () => this._applyPageStyle());
     Gtk.Settings.get_default().connect('notify::gtk-font-name', () => this._applyPageStyle());
+
+    this._web.connect('notify::title', () => {
+      if (this._depth > 0) this._emitNav();
+    });
+
+    // The name lookup for the engine is on the critical path of the first
+    // search; start it now, while the overview is still animating open.
+    try {
+      this._web.get_context().prefetch_dns('html.duckduckgo.com');
+      this._web.get_context().prefetch_dns('www.google.com');
+    } catch { /* older WebKit: one DNS lookup slower, nothing else */ }
 
     this._seat = Gdk.Display.get_default().get_default_seat();
     this.emitSignal = () => {};
@@ -493,7 +582,12 @@ class Renderer {
     this._ucm.remove_all_style_sheets();
     this._ucm.add_style_sheet(new WebKit2.UserStyleSheet(
       pageCss(this._engineId, theme), WebKit2.UserContentInjectedFrames.ALL_FRAMES,
-      WebKit2.UserStyleLevel.USER, null, null));
+      WebKit2.UserStyleLevel.USER, this._engine.match, null));
+    // Followed links are ordinary sites: no rewriting, only the desktop's
+    // light/dark preference, which a site that supports it will honour.
+    this._ucm.add_style_sheet(new WebKit2.UserStyleSheet(
+      `:root { color-scheme: ${systemPrefersDark() ? 'dark' : 'light'}; }`,
+      WebKit2.UserContentInjectedFrames.TOP_FRAME, WebKit2.UserStyleLevel.USER, null, this._engine.match));
     const rgba = new Gdk.RGBA();
     rgba.parse(theme.bg);
     this._web.set_background_color(rgba);
@@ -516,13 +610,48 @@ class Renderer {
   }
 
   _onLoadChanged(ev) {
+    if (ev === WebKit2.LoadEvent.COMMITTED) {
+      this._goingBack = false;
+      // Counted on commit, not at the policy decision: a link that 404s at the
+      // DNS stage never becomes a page the user can go back from.
+      if (this._pendingDepth !== 0) {
+        this._depth = Math.max(0, this._depth + this._pendingDepth);
+        this._pendingDepth = 0;
+        this._emitNav();
+      }
+    }
     if (ev === WebKit2.LoadEvent.COMMITTED || ev === WebKit2.LoadEvent.FINISHED) this._checkBlocked();
     if (ev === WebKit2.LoadEvent.FINISHED && !this._blocked) {
       this._loading = false;
       this._setState('ready', this._engine.label);
+      this._emitNav();
       this._scheduleFrame();
       if (DUMP_HTML) this._dumpPage();
     }
+  }
+
+  /**
+   * Where the user is: 0 is the results page, 1 is a link they followed from it.
+   * The Shell turns this into the back arrow and its depth badge.
+   */
+  _emitNav() {
+    const title = this._depth > 0 ? (this._web.get_title() || hostOf(this._web.get_uri() ?? '')) : '';
+    const uri = this._depth > 0 ? (this._web.get_uri() ?? '') : '';
+    this.emitSignal('Nav', new GLib.Variant('(uss)', [this._depth >>> 0, title, uri]));
+  }
+
+  /**
+   * Follow a link inside this view; the depth is counted when the load commits.
+   * The engine's tracking hop is unwrapped first: loading it verbatim commits a
+   * blank redirect document, so the view flashes empty for a second and the
+   * header names duckduckgo.com instead of where the user is going.
+   */
+  _follow(uri) {
+    const target = unwrapRedirect(uri);
+    this._pendingDepth = 1;
+    this._loading = true;
+    this._setState('loading', hostOf(target));
+    this._web.load_uri(target);
   }
 
   /** Dev only (SDS_DUMP_HTML=<file>): what did the engine actually serve? */
@@ -546,7 +675,7 @@ class Renderer {
    * exits (the other engine, or the real browser).
    */
   _checkBlocked() {
-    if (this._blocked) return;
+    if (this._blocked || this._depth > 0 || this._pendingDepth > 0) return;
     const uri = this._web.get_uri() ?? '';
     const reason = this._engine.blocked(uri);
     if (!reason) return;
@@ -558,12 +687,32 @@ class Renderer {
 
   _onDecidePolicy(decision, type) {
     if (type === WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION) {
-      this._launch(decision.get_navigation_action().get_request().get_uri());
+      const uri = decision.get_navigation_action().get_request().get_uri();
+      if (this._linkMode === 'contained' && isSafeHttpUrl(uri)) this._follow(uri);
+      else this._launch(uri);
       decision.ignore();
       return true;
     }
-    // Response decisions (MIME handling) are left to WebKit's defaults: only
-    // navigation is bridged, so scrolling, selection and clicks are untouched.
+    // A response this view cannot display (a PDF, an archive) would otherwise
+    // become a silent download into the user's Downloads folder. This is not a
+    // browser; hand it to the one the user chose.
+    if (type === WebKit2.PolicyDecisionType.RESPONSE) {
+      if (decision.is_mime_type_supported()) return false;
+      const uri = decision.get_request().get_uri();
+      this._launch(uri);
+      // Ignoring a *response* aborts the provisional load, and WebKit reports
+      // that through load-failed with a PolicyError. That is this code's own
+      // doing, not a page that broke: flag it so the error notice does not
+      // replace a perfectly good results page behind the user's back.
+      this._handedOff = true;
+      decision.ignore();
+      if (this._pendingDepth > 0) {
+        this._pendingDepth = 0;
+        this._loading = false;
+        this._emitNav();
+      }
+      return true;
+    }
     if (type !== WebKit2.PolicyDecisionType.NAVIGATION_ACTION) return false;
 
     const action = decision.get_navigation_action();
@@ -572,7 +721,23 @@ class Renderer {
     const onEngine = this._engine.hosts.test(hostOf(uri));
 
     if (!isSafeHttpUrl(uri)) {
+      // mailto:, magnet:, a custom app scheme: handing a remote page's URI to
+      // the desktop's handlers is a bigger surface than a search result needs,
+      // so it is refused — and said out loud, but only when the user actually
+      // clicked something. A page's own about:/blob:/data: loads are machinery
+      // (iframes, ads) and reporting those would make the header lie.
       decision.ignore();
+      const scheme = parseUri(uri)?.get_scheme() ?? '';
+      const clicked = navTypeOf(decision) === WebKit2.NavigationType.LINK_CLICKED;
+      if (clicked && !INTERNAL_SCHEMES.test(scheme)) {
+        this.emitSignal('Refused', new GLib.Variant('(s)', [scheme || uri]));
+      }
+      return true;
+    }
+    // Back(), which drives the history itself: allow it, and let Back's own
+    // bookkeeping own the depth.
+    if (navType === WebKit2.NavigationType.BACK_FORWARD) {
+      decision.use();
       return true;
     }
     // The load we asked for and the engine's own redirects and reloads may
@@ -586,7 +751,31 @@ class Renderer {
       decision.use();
       return true;
     }
-    // Everything else is a link: bridge it to the browser, never navigate here.
+    // Middle-click and Ctrl+click mean "not here" in every browser; honour that
+    // in contained mode rather than making the user change a setting.
+    const toBrowser = action.get_mouse_button() === 2
+      || (action.get_modifiers() & Gdk.ModifierType.CONTROL_MASK) !== 0;
+    if (this._linkMode === 'contained' && !toBrowser) {
+      // A redirect or reload the followed page issues itself is the same visit,
+      // not another step back: only something the user did adds depth.
+      const userStep = navType === WebKit2.NavigationType.LINK_CLICKED
+        || navType === WebKit2.NavigationType.FORM_SUBMITTED
+        || action.is_user_gesture();
+      // The engine's own tracking hop is not a page anyone wants to look at or
+      // go back to: skip straight to the destination.
+      const target = unwrapRedirect(uri);
+      if (target !== uri) {
+        decision.ignore();
+        if (userStep) this._follow(target);
+        return true;
+      }
+      if (userStep) this._pendingDepth = 1;
+      this._loading = true;
+      this._setState('loading', hostOf(uri));
+      decision.use();
+      return true;
+    }
+    // Browser mode: every link is bridged out, and nothing navigates here.
     this._launch(uri);
     decision.ignore();
     return true;
@@ -594,7 +783,23 @@ class Renderer {
 
   // --- frames ----------------------------------------------------------------
 
+  /**
+   * WebKit can finish painting a region after the damage event that announced
+   * it, and the export that followed catches the half-painted area — a grey
+   * rectangle that never repairs itself, because nothing damages it again. One
+   * more export after the repaints stop is what repairs it.
+   */
+  _scheduleSettleFrame() {
+    if (this._settleTimer) GLib.source_remove(this._settleTimer);
+    this._settleTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FRAME_SETTLE_MS, () => {
+      this._settleTimer = 0;
+      this._exportFrame();
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
   _scheduleFrame() {
+    this._scheduleSettleFrame();
     if (this._frameTimer) return;
     const wait = Math.max(FRAME_COALESCE_MS, FRAME_MIN_INTERVAL_MS - (now() - this._lastFrameAt));
     this._frameTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.ceil(wait), () => {
@@ -710,8 +915,53 @@ class Renderer {
     this._query = query;
     this._blocked = false;
     this._loading = true;
+    // A new search is the ground floor again: whatever the user had followed is
+    // behind them, and the Shell drops the back arrow when depth reaches 0.
+    this._depth = 0;
+    this._pendingDepth = 0;
+    this._goingBack = false;
+    this._emitNav();
     this._setState('loading', this._engine.label);
     this._web.load_uri(this._engine.serp(query));
+  }
+
+  /**
+   * One step back towards the results page. There is no forward: this is a way
+   * back to the search, not a browser.
+   */
+  Back() {
+    this._touchIdle();
+    // WebKit's history index only moves when the navigation commits, so two
+    // go_back() calls issued back to back both step off the same item: the user
+    // would travel one page while the badge counted two.
+    if (this._depth <= 0 || this._goingBack) return;
+    this._goingBack = true;
+    this._depth -= 1;
+    this._pendingDepth = 0;
+    this._loading = true;
+    this._emitNav();
+    this._setState('loading', this._depth === 0 ? this._engine.label : hostOf(this._web.get_uri() ?? ''));
+    if (this._web.can_go_back()) {
+      this._web.go_back();
+    } else if (this._query) {
+      // Nothing in the history to step to (a page that replaced its own entry):
+      // the results page is the honest destination, and that is depth 0.
+      this._depth = 0;
+      this._emitNav();
+      this._web.load_uri(this._engine.serp(this._query));
+    }
+  }
+
+  /** Hand whatever is showing to the real browser. */
+  OpenCurrent() {
+    this._touchIdle();
+    const uri = this._depth > 0 ? this._web.get_uri() : this._engine.serp(this._query);
+    if (uri) this._launch(uri);
+  }
+
+  /** 'contained' follows links in this view; 'browser' hands every link over. */
+  SetLinkMode(mode) {
+    this._linkMode = mode === 'browser' ? 'browser' : 'contained';
   }
 
   Configure(width, height, scale) {
@@ -738,13 +988,20 @@ class Renderer {
     this._scrollEvent(x, y, dx, dy);
   }
 
-  Pointer(kind, x, y, button, state) {
+  Pointer(kind, x, y, button, state, clicks = 1) {
     this._touchIdle();
     switch (kind) {
       case 'press':
         this._buttonsDown |= 1 << button;
         this._flushMotion();
         this._pointerEvent(Gdk.EventType.BUTTON_PRESS, x, y, button, state);
+        // WebKit takes its click count from the event type alone, and GTK sends
+        // the plain press *and* the multi-click event. Without this, a page can
+        // never see a double-click: no word select, no paragraph select, and no
+        // double-click inside the page's own text fields.
+        if (DEBUG && clicks > 1) printerr(`[sds-renderer] press clicks=${clicks}`);
+        if (clicks === 2) this._pointerEvent(Gdk.EventType.DOUBLE_BUTTON_PRESS, x, y, button, state);
+        else if (clicks >= 3) this._pointerEvent(Gdk.EventType.TRIPLE_BUTTON_PRESS, x, y, button, state);
         break;
       case 'release':
         this._buttonsDown &= ~(1 << button);
@@ -780,6 +1037,7 @@ class Renderer {
     this._touchIdle();
     // Re-emit the current state so a newly created view can pick it up.
     if (this._state) this._setState(this._state, this._engine.label);
+    this._emitNav();
     this._scheduleFrame();
   }
 
@@ -800,9 +1058,10 @@ class Renderer {
 
   destroy() {
     if (this._frameTimer) GLib.source_remove(this._frameTimer);
+    if (this._settleTimer) GLib.source_remove(this._settleTimer);
     if (this._motionTimer) GLib.source_remove(this._motionTimer);
     if (this._idleTimer) GLib.source_remove(this._idleTimer);
-    this._frameTimer = this._motionTimer = this._idleTimer = 0;
+    this._frameTimer = this._settleTimer = this._motionTimer = this._idleTimer = 0;
     this._frames.remove();
     this.window.destroy();
   }
@@ -832,7 +1091,8 @@ const renderer = new Renderer(exit);
 let owner = null;
 let ownerWatch = 0;
 const impl = {};
-for (const method of ['Search', 'Configure', 'Scroll', 'Pointer', 'Key', 'Refresh', 'Quit']) {
+for (const method of ['Search', 'Configure', 'Scroll', 'Pointer', 'Key',
+  'Back', 'OpenCurrent', 'SetLinkMode', 'Refresh', 'Quit']) {
   impl[`${method}Async`] = (params, invocation) => {
     const sender = invocation.get_sender();
     if (owner === null) {

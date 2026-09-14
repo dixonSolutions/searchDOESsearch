@@ -1,8 +1,8 @@
 {
   "name": "Search Does Search",
-  "description": "Shows web results from your own SearXNG instance, only when GNOME has no matching apps, files, or other system results.",
+  "description": "Renders a web search results page inside the GNOME overview, and follows the links you click there without leaving it.",
   "uuid": "search-does-search@searchdoessearch.github.io",
-  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "shell-version": ["48", "49", "50"],
   "url": "https://github.com/dixonSolutions/searchDOESsearch",
   "settings-schema": "org.gnome.shell.extensions.search-does-search"
 }

@@ -230,6 +230,22 @@ export DBUS_SESSION_BUS_ADDRESS="$BUS_ADDRESS"
 success "Bus up (pid ${BUS_PID:-?})"
 
 header "Starting the nested GNOME Shell"
+# A shell that has just been asked to quit still holds its wayland socket for a
+# moment, and mutter aborts outright ("unable to lock lockfile") rather than
+# waiting. Give the previous run a few seconds to let go, then step aside.
+lock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$WL_DISPLAY.lock"
+if [[ -e "$lock" ]]; then
+  info "Waiting for $WL_DISPLAY to be released"
+  for _ in $(seq 1 20); do
+    [[ -e "$lock" ]] || break
+    sleep 0.5
+  done
+  if [[ -e "$lock" ]]; then
+    WL_DISPLAY="$WL_DISPLAY-$$"
+    warn "Still held — using $WL_DISPLAY instead"
+  fi
+fi
+
 SHELL_ENV=(
   "DBUS_SESSION_BUS_ADDRESS=$BUS_ADDRESS"
   "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

@@ -18,6 +18,10 @@ export const RENDERER_OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 /** A frame the renderer has written: raw RGBA, `stride` bytes per row. */
 export interface Frame { path: string; width: number; height: number; stride: number; serial: number; }
 export type RendererState = 'loading' | 'ready' | 'blocked' | 'error';
+/** What a clicked link does: follow it in this view, or hand it to the browser. */
+export type LinkMode = 'contained' | 'browser';
+/** Where the user is: depth 0 is the results page itself. */
+export interface Nav { depth: number; title: string; uri: string; }
 export type PointerKind = 'press' | 'release' | 'move' | 'leave';
 export type KeyKind = 'press' | 'release';
 
@@ -25,6 +29,9 @@ export interface RendererListener {
   onFrame(frame: Frame): void;
   onState(state: RendererState, detail: string): void;
   onLaunched(url: string): void;
+  onNav(nav: Nav): void;
+  /** A link this view will not open at all; the argument is its scheme. */
+  onRefused(scheme: string): void;
 }
 
 const CALL_TIMEOUT_MS = 2000;
@@ -37,9 +44,12 @@ export class RendererClient {
   private _signalId = 0;
   private _watchId = 0;
   private _process: Gio.Subprocess | null = null;
+  /** Whether this renderer ever reached the bus; a crash before that is a real failure. */
+  private _served = false;
   private _cancellable = new Gio.Cancellable();
   private _lastSearch: [string, string] | null = null;
   private _lastConfigure: [number, number, number] | null = null;
+  private _linkMode: LinkMode = 'contained';
   private _destroyed = false;
 
   /** @param script absolute path of panel/sds-renderer.js */
@@ -62,6 +72,28 @@ export class RendererClient {
     this._call('Search', new GLib.Variant('(ss)', [query, engine]));
   }
 
+  /** Start the renderer process before it is needed, so the first search is not also a cold start. */
+  prewarm(): void {
+    this._ensureRunning();
+  }
+
+  /** One step back towards the results page; ignored at depth 0. */
+  back(): void {
+    this._call('Back', null);
+  }
+
+  /** Hand whatever the view is showing to the default browser. */
+  openCurrent(): void {
+    this._call('OpenCurrent', null);
+  }
+
+  /** Replayed if the renderer restarts, so a link never opens the wrong way. */
+  setLinkMode(mode: LinkMode): void {
+    if (mode === this._linkMode && this._proxy) return;
+    this._linkMode = mode;
+    this._call('SetLinkMode', new GLib.Variant('(s)', [mode]));
+  }
+
   /** Frame size in device pixels and the Shell's scale factor (applied as page zoom). */
   configure(width: number, height: number, scale: number): void {
     const next: [number, number, number] = [width, height, scale];
@@ -74,8 +106,9 @@ export class RendererClient {
     this._call('Scroll', new GLib.Variant('(dddd)', [x, y, dx, dy]), true);
   }
 
-  pointer(kind: PointerKind, x: number, y: number, button: number, state: number): void {
-    this._call('Pointer', new GLib.Variant('(sdduu)', [kind, x, y, button >>> 0, state >>> 0]), true);
+  /** `clicks` is the click count: 2 and 3 are what let a page select a word or a line. */
+  pointer(kind: PointerKind, x: number, y: number, button: number, state: number, clicks = 1): void {
+    this._call('Pointer', new GLib.Variant('(sdduuu)', [kind, x, y, button >>> 0, state >>> 0, clicks >>> 0]), true);
   }
 
   key(kind: KeyKind, keyval: number, keycode: number, state: number): void {
@@ -90,7 +123,18 @@ export class RendererClient {
   destroy(): void {
     this._destroyed = true;
     this._cancellable.cancel();
-    if (this._proxy) this._call('Quit', null, true);
+    if (this._proxy) {
+      this._call('Quit', null, true);
+    } else if (this._process) {
+      // Disabled while WebKit was still starting: there is no one to ask
+      // politely, and a renderer left behind holds the bus name and its web
+      // process for the next quarter of an hour.
+      try {
+        this._process.force_exit();
+      } catch (error) {
+        console.warn(`[SearchDoesSearch] could not stop the starting renderer: ${error}`);
+      }
+    }
     this._dropProxy();
     if (this._watchId) {
       Gio.bus_unwatch_name(this._watchId);
@@ -119,11 +163,14 @@ export class RendererClient {
           proc?.wait_finish(res);
         } catch { /* reaped anyway */ }
         if (this._process === process) this._process = null;
-        if (!this._proxy && !this._destroyed) {
-          const status = process.get_if_exited() ? process.get_exit_status() : -1;
-          console.warn(`[SearchDoesSearch] renderer exited (status ${status}) before serving the bus`);
-          this._emitState('error', 'The page renderer failed to start');
-        }
+        const status = process.get_if_exited() ? process.get_exit_status() : -1;
+        // The renderer exits by design after a long idle, and on Quit. Only a
+        // renderer that died without ever serving the bus, or crashed, is worth
+        // telling the user about — the rest is normal housekeeping, and
+        // reporting it painted an error over a perfectly good page.
+        if (this._destroyed || status === 0) return;
+        console.warn(`[SearchDoesSearch] renderer exited (status ${status})`);
+        if (!this._served) this._emitState('error', 'The page renderer failed to start');
       });
     } catch (error) {
       console.warn(`[SearchDoesSearch] failed to start the page renderer: ${error}`);
@@ -147,8 +194,10 @@ export class RendererClient {
         }
         if (this._destroyed) return;
         this._proxy = proxy;
+        this._served = true;
         this._signalId = proxy.connect('g-signal', (_p, _sender, name, params) => this._onSignal(name, params));
         // The renderer may have (re)started after these were requested.
+        this._call('SetLinkMode', new GLib.Variant('(s)', [this._linkMode]));
         if (this._lastConfigure) this._call('Configure', new GLib.Variant('(iid)', this._lastConfigure));
         if (this._lastSearch) this._call('Search', new GLib.Variant('(ss)', this._lastSearch));
       });
@@ -156,6 +205,11 @@ export class RendererClient {
 
   private _onNameVanished(): void {
     this._dropProxy();
+    // The process is gone (idle exit, Quit, a crash). Forget the handle, or the
+    // next search finds `_process` still set, decides a renderer is on its way,
+    // and is dropped on the floor.
+    this._process = null;
+    this._served = false;
   }
 
   private _dropProxy(): void {
@@ -202,6 +256,16 @@ export class RendererClient {
       case 'Launched': {
         const [url] = params.deepUnpack() as [string];
         for (const l of this._listeners) l.onLaunched(url);
+        break;
+      }
+      case 'Nav': {
+        const [depth, title, uri] = params.deepUnpack() as [number, string, string];
+        for (const l of this._listeners) l.onNav({depth, title, uri});
+        break;
+      }
+      case 'Refused': {
+        const [scheme] = params.deepUnpack() as [string];
+        for (const l of this._listeners) l.onRefused(scheme);
         break;
       }
       default:

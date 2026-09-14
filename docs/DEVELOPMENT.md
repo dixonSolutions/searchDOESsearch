@@ -8,8 +8,8 @@ Install the following before starting:
 # Node.js 20+ (for TypeScript tooling)
 node --version   # should be >= 20
 
-# Runtime fetch + a container runtime for a local SearXNG instance
-sudo apt install curl docker.io
+# The renderer process (GJS + GTK3 + WebKit2)
+sudo apt install gir1.2-webkit2-4.1
 
 # GNOME Shell development tools
 sudo apt install gnome-shell-extensions libglib2.0-bin
@@ -18,9 +18,8 @@ sudo apt install gnome-shell-extensions libglib2.0-bin
 gjs --version
 ```
 
-`make build` compiles TypeScript and assembles `dist/`. `make searxng` starts a local
-SearXNG instance on `http://localhost:8888` with JSON output enabled — the extension's
-default target, and what the tests query.
+`make build` compiles TypeScript and assembles `dist/`; `make install` also compiles the
+GSettings schema and clears the installed copy first, so a deleted module cannot linger.
 
 ---
 
@@ -161,9 +160,9 @@ search-does-search/
 ├── src/
 │   ├── extension.ts        ← enable() / disable() lifecycle
 │   ├── searchProvider.ts   ← GNOME Search Provider (one result: the page)
-│   ├── pageView.ts         ← overview actor: frame texture, input forwarding, sidebar
+│   ├── pageView.ts         ← overview actor: frame texture, input forwarding, header
 │   ├── rendererClient.ts   ← spawns/talks to the renderer over D-Bus
-│   ├── webSearch.ts        ← SearXNG JSON query + URL validation (sidebar links)
+│   ├── section.ts          ← provider column, section order, conditional visibility
 │   ├── browserLauncher.ts  ← default browser launch
 │   └── prefs.ts            ← preferences window
 ├── panel/
@@ -174,7 +173,7 @@ search-does-search/
 │   ├── build.mjs             ← TypeScript compile + dist assembly
 │   ├── nested-test.sh        ← Build + run in a nested shell (make nested)
 │   ├── keystroke-harness.js  ← Freeze regression test (make check-freeze)
-│   └── fetch-check.js        ← Live fetch smoke test (make check-fetch)
+│   └── provider-check.js     ← Load-decision regression test (make check-provider)
 ├── docs/
 │   ├── ARCHITECTURE.md     ← How it works
 │   ├── DEVELOPMENT.md      ← This file
@@ -190,11 +189,13 @@ search-does-search/
 
 ---
 
-## Changing Which Engines Are Searched
+## Changing Which Engine Is Rendered
 
-This is configured in SearXNG, not in the extension. Edit the `engines:` section of
-your instance's `settings.yml` and restart it; the extension sees whatever the
-instance returns.
+The engine list is `ENGINES` in `panel/sds-renderer.js` (the SERP URL, the hosts
+its own redirects may use, the URL patterns its stylesheet is scoped to, and how
+its block page is recognised) with the matching label and browser URL in
+`src/pageView.ts`. Adding one means adding a CSS rule set in `pageCss()` too —
+the page is stripped to its results, and every engine's markup differs.
 
 **Do not add a direct-scraping backend here.** It was tried and removed. Only
 DuckDuckGo's HTML endpoint held up; everything else rate-limited, CAPTCHA'd, or
@@ -225,35 +226,47 @@ machine — that has already happened once here, and the checks below exist to s
 it happening again.
 
 ```bash
-make searxng        # start a local instance the tests can query
-make check          # everything below
-make check-freeze   # cancel-per-keystroke must never block the calling thread
-make check-fetch    # a live query must yield results
+make check           # everything below
+make check-freeze    # cancel-per-keystroke must never block the calling thread
+make check-provider  # a page load is issued exactly when it should be
 ```
-
-`make check-fetch` needs a reachable instance. Point it elsewhere with
-`make check-fetch SEARXNG_INSTANCE=http://host:port`.
 
 `make check-freeze` drives the built provider exactly as GNOME Shell does: it
 cancels the in-flight search on every keystroke. A regression **hangs** instead of
 failing fast, which is why it runs under `timeout` and reports exit code 124 as a
 deadlock.
 
+`make check-provider` drives the provider with a fake renderer and a fake view and
+asserts the three rules about when a page is loaded — once per settled burst, not
+again for terms already showing, but again if the user has followed links away
+from the results page (without the last one, retyping your own query while three
+pages deep leaves you stranded there).
+
 Both harnesses import from `dist/`, so they test the shipped artefact rather than
 the TypeScript source. They need the St and Meta typelibs, which live outside the
 default search path; the Makefile supplies them.
 
+Everything else is verified by driving a nested session (`make nested`), because
+the behaviour that matters — a page that scrolls, a link that is followed, a
+section that hides — only exists inside a running Shell.
+
 ### Manual verification
 
-1. `make install`, restart the shell, then `make enable`
+1. `make nested` (or `make install` and log out and in)
 2. Open Activities, type a query; after you pause, the rendered page appears in the
-   searchDOESsearch section (first render ~2.5 s: renderer start + page load)
+   searchDOESsearch section, its results column centred, with no provider column
+   down the left
 3. Scroll the page with the wheel, hover a result (it highlights), click into the
-   page and press PageDown, Tab, Enter — the page reacts; Enter on a link opens
-   the browser and closes the overview
-4. Toggle the sidebar (its button or F9); with a SearXNG instance running, rows
-   appear; without one, the sidebar says what is wrong instead of staying empty
-5. Switch the engine to Google in Extension Settings on a flagged network — the
+   page and press PageDown, Tab — the page reacts
+4. Click a result: it loads in place, and a back pill appears at the right of the
+   header. Follow a second link: the badge reads 2. Press it (or Alt+Left, or the
+   mouse's back button) until it disappears — you are back at your results, at the
+   scroll position you left
+5. Middle-click or Ctrl+click a link: it goes to the browser instead, and the view
+   stays where it was
+6. Set "Show web results" to "Only when nothing else matched": a query matching an
+   app hides the section entirely; a query nothing else matches shows it
+7. Switch the engine to Google in Extension Settings on a flagged network — the
    page is replaced by the "refusing this network" notice with a DuckDuckGo button
 
 ### The renderer on its own

@@ -10,11 +10,11 @@ When you type in the Activities overlay, instead of your browser automatically h
 
 - Intercepts queries in the GNOME Activities search bar
 - Shows the engine's **rendered results page inside the overview** — scroll it, click it, use the keyboard in it
-- Optional sidebar listing the result links, fetched from **your own [SearXNG](https://docs.searxng.org/) instance** — no API keys
-- Opens results in your **default browser** (Firefox, Chrome, Brave, Chromium — anything)
+- **Follows the links you click, in place**, with a back control counting how many pages deep you are — or hands them to your browser, whichever you set
+- Opens in your **default browser** when you ask it to (Firefox, Chrome, Brave, Chromium — anything)
+- Decides for itself **when to appear**: every search, or only when nothing else matched
 - Queries never touch a third party you did not choose
-- Says what is wrong when the instance is missing or misconfigured, instead of showing an empty list
-- Debounces keystrokes and cancels in-flight fetches as the query changes
+- Debounces keystrokes, and warms the renderer while the overview opens
 - Works on X11 and Wayland
 - Compatible with GNOME Shell 45–50
 
@@ -24,9 +24,10 @@ When you type in the Activities overlay, instead of your browser automatically h
 
 - GNOME Shell 45 or later
 - Ubuntu 23.10+ / Fedora 39+ / any distro running GNOME 45+
-- `curl` *(runtime fetch)*
-- A reachable SearXNG instance with JSON output enabled *(see below)*
+- GJS with WebKit2 4.1 typelib (`gir1.2-webkit2-4.1` on Debian/Ubuntu) — the renderer process
 - Node.js 20+ *(for building from source)*
+
+No account, no API key, and no service of your own to run.
 
 ---
 
@@ -51,28 +52,6 @@ make enable
 # Wayland: Log out and back in
 ```
 
-### Set up a SearXNG instance
-
-The extension needs somewhere to send queries. If you have Docker, one command
-starts an instance on the default port with JSON output already enabled:
-
-```bash
-make searxng        # starts it on http://localhost:8888
-make searxng-stop   # removes it again
-```
-
-To point the extension at an instance you already run:
-
-```bash
-gsettings set org.gnome.shell.extensions.search-does-search \
-  searxng-instance 'http://localhost:8888'
-```
-
-Only `http` and `https` addresses are accepted. Whichever instance you use must
-list `json` under `search.formats` in its `settings.yml` — it is off by default,
-and without it SearXNG answers with `403`. The extension will tell you so in the
-overview if that happens.
-
 ---
 
 ## Usage
@@ -80,18 +59,23 @@ overview if that happens.
 1. Press the **Super key** to open Activities
 2. Start typing any search query
 3. Once you pause, the engine's results page renders in the **searchDOESsearch** section
-4. Scroll or click the page; click a result to open it in your default browser.
-   **Enter** opens the whole search in the browser instead.
+4. Scroll or click the page. A clicked link opens **in place**, and a back control
+   appears at the right of the section's header carrying how many pages you have
+   followed; press it (or **Alt+Left**, or your mouse's back button) until it
+   disappears and you are back at your results.
+   **Enter** opens what you are looking at in your real browser — the search at
+   the results page, that page once you have followed a link. So does
+   middle-click or **Ctrl+click** on any link.
 
-Which engine's page is shown (DuckDuckGo or Google) and whether the sidebar of
-links is visible are set in Extension Settings. Which upstream engines feed the
-sidebar is configured in SearXNG itself, not here.
+Four settings, all in Extension Settings: which engine's page is rendered
+(DuckDuckGo or Google), whether links open in the overview or in your browser,
+whether the section shows for every search or only when nothing else matched, and
+whether it is moved above the other sections.
 
-**Why a SearXNG instance instead of querying engines directly?** Because scraping
-engines no longer holds together. Of the engines tested, only DuckDuckGo's HTML
-endpoint stayed reliable; Mojeek rate-limits to roughly one query per 30–60
-seconds per IP, Brave's markup is build-hashed and breaks on every deploy, and
-Bing and Startpage answer with CAPTCHAs.
+**Why DuckDuckGo's page?** Because of the engines tested, only its HTML endpoint
+stayed reliable: Mojeek rate-limits to roughly one query per 30–60 seconds per
+IP, Brave's markup is build-hashed and breaks on every deploy, and Bing and
+Startpage answer with CAPTCHAs.
 
 Google is worth spelling out, because "just render the JavaScript" is such an
 obvious idea. Its response to a scripted client is 168 characters of redirect
@@ -100,17 +84,10 @@ cookie jar, and warm session returns the byte-identical page. Rendering it in a
 real browser engine does not help either: WebKitGTK on a rested IP loads
 `google.com` perfectly and is then refused at `/search` on the *first* request.
 The gate is on the JavaScript runtime environment, not on behaviour, so no amount
-of simulated human activity reaches it — but Google's sanctioned Programmable
-Search endpoint answers fine, and SearXNG queries it for you. The full
-measurements are in [docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md).
-
-SearXNG fans one query across many upstreams and degrades gracefully when an
-individual engine refuses, which is exactly the resilience this extension would
-otherwise have to reinvent badly.
-
-The query is sent to your instance only after GNOME's local and application
-providers return no results. Results arrive as JSON over a plain HTTP GET
-(`curl`). Activating a card opens its URL in the system default browser.
+of simulated human activity reaches it. Google stays selectable because on an
+unflagged network it works; when it does not, the extension says so rather than
+pretending. The full measurements are in
+[docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md).
 
 ### The results page, inside the overview
 
@@ -126,17 +103,16 @@ scroll and key events back to the renderer, which replays them as real GDK event
 on the WebView. Measured on a 812×464 page: one wheel notch shows in the overview
 27–39 ms later; nothing repaints while idle.
 
-- Every link — in the page or in the sidebar — opens in your default browser;
-  the rendered page never navigates away from the results. Only navigation
-  decisions are intercepted, so scrolling, selection, focus and clicks are WebKit's
-  own behaviour. The overview closes when a link is opened.
+- A clicked link is **followed in the same view** (the default) or handed to your
+  browser, which closes the overview. Only navigation decisions are intercepted,
+  so scrolling, selection, focus and clicks are WebKit's own behaviour.
+- Followed pages get a back control and nothing else: no forward, no address bar,
+  no tabs. It is a way back to your search, not a browser. Anything the view
+  cannot show — a download, a PDF — goes to your real browser whichever mode you
+  are in, and a link that is not a web page (`mailto:`, an app scheme) is refused
+  and said so in the header.
 - Click the page to give it the keyboard; **Escape** hands it back to the search
-  entry. The section heading and the browser button open the same search in your
-  browser.
-- The sidebar is a compact, top-anchored list of the result links from SearXNG.
-  It is off by default (the page already lists the results): toggle it with
-  **F9** or its button, or in Extension Settings, which also sets its side and
-  width.
+  entry. The section heading opens the same search in your browser.
 - Everything follows the system theme, including the light/dark preference.
   There is no theme setting: the overview widgets use the Shell's own style
   classes, and the stylesheet injected into the page takes its colours and font
@@ -170,21 +146,23 @@ See [docs/PUBLISHING.md](docs/PUBLISHING.md) for the submission process to exten
 src/
 ├── extension.ts        ← Extension lifecycle (enable / disable)
 ├── searchProvider.ts   ← GNOME Search Provider API implementation
-├── pageView.ts         ← The overview widget: page texture, input forwarding, sidebar
+├── pageView.ts         ← The overview widget: page texture, input forwarding, back control
+├── section.ts          ← Where the section sits in the results, and whether it shows
 ├── rendererClient.ts   ← Spawns and talks to the renderer over D-Bus
-├── webSearch.ts        ← SearXNG JSON query + URL validation (sidebar links)
 ├── browserLauncher.ts  ← Default browser launch
 └── prefs.ts            ← Preferences window
+stylesheet.css          ← Styling for this section only (the Shell loads it on enable)
 panel/
 └── sds-renderer.js     ← Off-screen WebKit renderer process (frames + input)
 scripts/
 ├── build.mjs           ← tsc + static asset copy
-├── fetch-check.js      ← Live query smoke test
+├── nested-test.sh      ← Build + run it all in a nested GNOME session
 └── keystroke-harness.js ← Cancel-per-keystroke freeze regression test
 schemas/
 └── *.gschema.xml       ← GSettings schema for preferences
 docs/
 ├── ARCHITECTURE.md
+├── DESIGN-overview-ui.md
 ├── DEVELOPMENT.md
 ├── GJS-PITFALLS.md
 └── PUBLISHING.md

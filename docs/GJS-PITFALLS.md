@@ -99,7 +99,7 @@ const [, stdout] = await proc.communicate_utf8_async(stdin, cancellable);
 That off-by-one was the second reason no results ever appeared.
 
 **Rule:** verify tuple shape against the C `_finish()` signature, and assert on it
-in a smoke test (`make check-fetch`).
+in a harness that imports the built artefact (`make check`).
 
 ---
 
@@ -126,23 +126,24 @@ localhost HTTP endpoint. None of that belongs in a shipped extension.
 
 ---
 
-## 6. Do not scrape engines — query a SearXNG instance
+## 6. Do not scrape engines — render the engine's own page
 
-The extension used to fetch engine HTML with `curl` and parse it with a Lexbor-backed
-native helper. That backend is gone. Results now come from a user-run **SearXNG**
-instance over its JSON API, and this section records the measurements behind that
-decision so nobody re-litigates it.
+Two backends have been removed from this codebase: fetching engine HTML with `curl`
+and parsing it with a Lexbor-backed native helper, and later listing links from a
+user-run **SearXNG** instance over its JSON API. What remains is the engine's own
+results page, rendered by `panel/sds-renderer.js` and shown as a texture. This
+section records the measurements behind both removals so nobody re-litigates them.
 
-Remote data is still hostile input, so two rules survive the rewrite:
+Remote data is still hostile input, and the rule that matters survives every rewrite:
 
-- Every child process gets a wall-clock timeout (`PROCESS_TIMEOUT_MS`) in case
-  `curl` wedges.
-- Only `http`/`https` URLs may reach `Gio.AppInfo.launch_default_for_uri()`. This is
-  checked in `webSearch.normalizeResultUrl()` **and** re-checked in
+- Only `http`/`https` URLs may reach `Gio.AppInfo.launch_default_for_uri()`. It is
+  checked in `sds-renderer.js` (`isSafeHttpUrl`, after `unwrapRedirect` has resolved
+  the engine's tracking hop) **and** re-checked in
   `browserLauncher.openInDefaultBrowser()`, because the launcher is the actual sink
-  and must not trust its caller. The configured instance address is validated the
-  same way by `normalizeInstanceUrl()` — a GSettings string is handed to `curl`, so
-  allowing arbitrary schemes would let a bad setting reach `file://` or `scp://`.
+  and must not trust its caller. Anything else — `mailto:`, `magnet:`, an app scheme —
+  is refused rather than handed to the desktop's handler list.
+- The same applies to what the contained view will *display*: a response WebKit
+  cannot render goes to the real browser instead of becoming a silent download.
 
 ### Scraping was never going to hold
 
@@ -194,7 +195,7 @@ ordinary browsing.
 > the gate is environmental. Rate your own test traffic before drawing conclusions
 > from a rate limiter.
 
-### Why SearXNG is the right shape
+### Why SearXNG looked right, and why it is gone too
 
 SearXNG fans one query across many upstreams, owns the blocking problem, and degrades
 gracefully when an individual engine refuses. Measured against a local instance:
@@ -211,10 +212,11 @@ where the scraper could not. Google-sourced results are reachable; scraping was
 simply the wrong door. SearXNG's plain `google` engine returned nothing, exactly as
 the table above predicts.
 
-The trade-off is explicit: the user must run a service. When it is missing,
-misconfigured, or serving HTML instead of JSON, the provider surfaces a row that
-names the cause and links to the fix, rather than showing an empty list that is
-indistinguishable from "no matches".
+The trade-off was explicit: the user had to run a service. That is what killed it in
+the end — the rendered results page already shows what the link list showed, so the
+instance bought a duplicate of the page at the cost of a container to maintain. The
+measurements above are kept because they are still the reason **not** to reintroduce a
+scraper: the engines that refused a scripted client then refuse one now.
 
 ---
 
@@ -232,10 +234,10 @@ initial synchronous execution.
 ## Verifying
 
 ```bash
-make searxng        # start a local instance with JSON output enabled
-make check          # freeze regression + live fetch smoke test
-make check-freeze   # cancel-per-keystroke must never block the thread
-make check-fetch    # live query must yield results
+make check           # everything below
+make check-freeze    # cancel-per-keystroke must never block the thread
+make check-provider  # a page load is issued exactly when it should be
+make nested          # the whole thing, in a throwaway GNOME session
 ```
 
 `make check-freeze` hangs on a regression rather than failing fast — that *is* the

@@ -3,27 +3,12 @@
   <schema id="org.gnome.shell.extensions.search-does-search"
           path="/org/gnome/shell/extensions/search-does-search/">
 
-    <key name="searxng-instance" type="s">
-      <default>'http://localhost:8888'</default>
-      <summary>SearXNG instance address</summary>
-      <description>
-        Origin of the SearXNG instance queried for the sidebar's link list, for
-        example 'http://localhost:8888'. Only http and https addresses are accepted;
-        any path, query, or fragment is ignored. The instance must have 'json'
-        listed under search.formats in its settings.yml.
+    <!-- Four keys, all enums. The page is rendered by panel/sds-renderer.js (a
+         separate process — GNOME Shell cannot host WebKit) and shown in the
+         overview by the page view; these keys are read by the page view, the
+         section placement and the prefs UI. -->
 
-        The list comes from SearXNG rather than direct scraping because search
-        engines gate their result pages against non-browser clients. SearXNG spreads
-        a query across many upstreams and degrades gracefully when one refuses.
-      </description>
-    </key>
-
-    <!-- Results page: the engine's page is rendered by panel/sds-renderer.js (a
-         separate process — GNOME Shell cannot host WebKit) and shown inside the
-         overview by the extension. These keys are read by the page view and the
-         prefs UI. The key names keep their historical "panel-" prefix. -->
-
-    <key name="panel-engine" type="s">
+    <key name="engine" type="s">
       <choices>
         <choice value="duckduckgo"/>
         <choice value="google"/>
@@ -31,46 +16,66 @@
       <default>'duckduckgo'</default>
       <summary>Results page engine</summary>
       <description>
-        Which engine's results page is rendered. DuckDuckGo's HTML endpoint
-        renders reliably. Google is offered because its results are wanted, but it
-        answers many networks (VPN exits in particular) with its "unusual traffic"
-        check; the page detects that and reports it instead of trying to get past it.
+        Which engine's results page is rendered in the overview. DuckDuckGo's HTML
+        endpoint renders reliably; Google answers many networks (VPN exits in
+        particular) with its "unusual traffic" check, which is reported rather than
+        worked around.
       </description>
     </key>
 
-    <key name="panel-sidebar-visible" type="b">
-      <default>false</default>
-      <summary>Show the results sidebar</summary>
-      <description>
-        Whether the compact list of result links is shown beside the rendered page.
-        Off by default: the page already lists the results, so the sidebar is
-        supplementary. The sidebar button and F9 toggle the same key, so the choice
-        persists.
-      </description>
-    </key>
-
-    <key name="panel-sidebar-position" type="s">
+    <key name="link-mode" type="s">
       <choices>
-        <choice value="left"/>
-        <choice value="right"/>
+        <choice value="contained"/>
+        <choice value="browser"/>
       </choices>
-      <default>'left'</default>
-      <summary>Sidebar position</summary>
-      <description>Which side of the rendered page the sidebar is docked to.</description>
+      <default>'contained'</default>
+      <summary>What a clicked link does</summary>
+      <description>
+        'contained' follows the link inside the overview's page and shows a back
+        control carrying how many pages you have followed; middle-click or
+        Ctrl+click still opens a link in the browser. 'browser' hands every link to
+        the default browser and closes the overview. Enter on the section always
+        opens what you are looking at in the browser.
+
+        Contained is not a browser: no forward, no address bar, no tabs. Anything
+        the view cannot display — a download, a PDF — goes to the real browser
+        whichever mode this is set to.
+      </description>
     </key>
 
-    <key name="panel-sidebar-width" type="i">
-      <default>272</default>
-      <range min="180" max="480"/>
-      <summary>Sidebar width</summary>
-      <description>Width of the sidebar in logical pixels.</description>
+    <key name="section-visibility" type="s">
+      <choices>
+        <choice value="always"/>
+        <choice value="no-other-results"/>
+      </choices>
+      <default>'always'</default>
+      <summary>When the web results section is shown</summary>
+      <description>
+        'always' shows the section for every search. 'no-other-results' shows it
+        only when no application, file or other provider matched; your browser's own
+        "Search online" entry answers every query, so it does not count as a match.
+        The page is rendered either way, so showing it is instant.
+      </description>
     </key>
 
-    <key name="panel-sidebar-limit" type="i">
-      <default>10</default>
-      <range min="3" max="20"/>
-      <summary>Sidebar result count</summary>
-      <description>Maximum number of links listed in the sidebar.</description>
+    <key name="section-placement" type="s">
+      <choices>
+        <choice value="top"/>
+        <choice value="top-when-alone"/>
+        <choice value="default"/>
+      </choices>
+      <default>'top-when-alone'</default>
+      <summary>Where the section sits among the search results</summary>
+      <description>
+        'top' pins the section above every other one. 'top-when-alone' moves it up
+        only when nothing else matched (the browser's "Search online" entry aside),
+        so a real app or file match is never pushed down the list. 'default' leaves
+        it where GNOME Shell puts it.
+
+        This moves the section, not the keyboard selection: GNOME picks what Enter
+        activates by provider registration order, so with another section showing,
+        Enter still goes to that one.
+      </description>
     </key>
 
   </schema>

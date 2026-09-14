@@ -21,8 +21,6 @@ import System from 'system';
 
 import {SearchProvider} from '../dist/search-does-search@searchdoessearch.github.io/searchProvider.js';
 
-/** Deliberately a dead port: the deadlock lived in cancellation, not in the backend. */
-const INSTANCE = GLib.getenv('SEARXNG_INSTANCE') ?? 'http://localhost:8888';
 const QUERY = 'browser';
 /** Faster than the provider's 400ms debounce, so every search is cancelled mid-wait. */
 const KEYSTROKE_INTERVAL_MS = 120;
@@ -31,7 +29,7 @@ const CANCEL_BUDGET_MS = 250;
 const DRAIN_MS = 10000;
 
 const loop = GLib.MainLoop.new(null, false);
-const provider = new SearchProvider({instanceUrl: INSTANCE, engine: "duckduckgo"});
+const provider = new SearchProvider({engine: 'duckduckgo'});
 
 let pending = null;
 let typed = 0;

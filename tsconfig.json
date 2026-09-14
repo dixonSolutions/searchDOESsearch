@@ -30,6 +30,9 @@
       "resource:///org/gnome/shell/extensions/prefs.js": [
         "./node_modules/@girs/gnome-shell/src/extensions/prefs.d.ts"
       ],
+      "resource:///org/gnome/shell/ui/animation.js": [
+        "./node_modules/@girs/gnome-shell/src/ui/animation.d.ts"
+      ],
       "resource:///org/gnome/shell/ui/main.js": [
         "./node_modules/@girs/gnome-shell/src/ui/main.d.ts"
       ],

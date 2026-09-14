@@ -48,6 +48,8 @@ rmSync(tmpDir, { recursive: true });
 // ---------------------------------------------------------------------------
 console.log('→ Copying static assets...');
 copyFileSync('metadata.json', join(OUT_DIR, 'metadata.json'));
+// GNOME loads stylesheet.css from the extension directory on enable.
+copyFileSync('stylesheet.css', join(OUT_DIR, 'stylesheet.css'));
 copyFileSync(
   'schemas/org.gnome.shell.extensions.search-does-search.gschema.xml',
   join(OUT_DIR, 'schemas/org.gnome.shell.extensions.search-does-search.gschema.xml')

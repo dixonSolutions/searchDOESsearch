@@ -2,12 +2,8 @@ import St from 'gi://St';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {openInDefaultBrowser} from './browserLauncher.js';
-import {SearchOutcome, WebResult, fetchWebResults} from './webSearch.js';
 
 interface ResultMeta { id: string; name: string; description: string; createIcon: (size: number) => St.Widget; }
-
-/** The compact link list shown in the sidebar, or a notice explaining why there is none. */
-export interface LinkOutcome { results: WebResult[]; notice: string | null; }
 
 /**
  * The actor shown in the overview for this provider's single result. It is
@@ -19,47 +15,39 @@ export interface ResultView {
   setQuery(query: string): void;
   /** The terms held still; `reloading` says the renderer was asked for a new page. */
   querySettled(query: string, reloading: boolean): void;
+  /** True while the user is on a page they followed rather than the results page. */
+  readonly navigated: boolean;
   connect(signal: 'destroy', callback: () => void): number;
 }
 
 export interface SearchProviderOptions {
-  instanceUrl: string;
-  /** Which engine's page is rendered: a key of the panel-engine setting. */
+  /** Which engine's page is rendered: a value of the `engine` setting. */
   engine: string;
   /** Loads the page. Absent in the headless harness. */
   renderer?: {search(query: string, engine: string): void};
   /** Builds the overview actor. Absent in the headless harness. */
-  createView?: (fetchLinks: (query: string, limit: number, cancellable: Gio.Cancellable) => Promise<LinkOutcome>) => ResultView;
+  createView?: () => ResultView;
 }
 
 /**
  * A keystroke changes the terms several times a second; the renderer loads the
  * page only once they have held still this long. Meanwhile the view keeps the
  * previous page and shows the new terms in its header.
+ *
+ * 200ms is about where a pause stops feeling like part of the keystroke, and
+ * the renderer is already warm (the overview prewarms it), so the load starts
+ * while the user is still lifting their finger. The floor below then keeps a
+ * fast typist from queueing a load per word.
  */
-const RENDER_DEBOUNCE_MS = 450;
+const RENDER_DEBOUNCE_MS = 200;
+/** Never start two page loads closer together than this. */
+const RENDER_MIN_INTERVAL_MS = 400;
 
 const PAGE_RESULT_ID = 'sds:page';
 const BROWSER_URLS: Record<string, (q: string) => string> = {
   duckduckgo: q => `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
   google: q => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
 };
-
-const DOCS_INSTALL = 'https://docs.searxng.org/admin/installation-docker.html';
-
-/**
- * Turn a failed lookup into one line that states the cause. Showing nothing
- * would be indistinguishable from "no matches".
- */
-function noticeFor(outcome: SearchOutcome): string | null {
-  switch (outcome.status) {
-    case 'badInstance': return `${outcome.detail} — set a SearXNG instance in the extension settings (${DOCS_INSTALL})`;
-    case 'unreachable': return `SearXNG is not responding: ${outcome.detail}`;
-    case 'enginesUnavailable': return `SearXNG could not reach any engine (${outcome.engines.join(', ')})`;
-    case 'notJson': return `Enable JSON output on your SearXNG instance: ${outcome.detail}`;
-    default: return null;
-  }
-}
 
 /**
  * Section heading for the results (the extension's own name), and the reason this
@@ -86,6 +74,7 @@ export class SearchProvider {
   private _query = '';
   private _rendered = '';
   private _debounceId = 0;
+  private _lastRenderAt = 0;
   private _view: ResultView | null = null;
 
   constructor(options: SearchProviderOptions) { this._options = options; }
@@ -130,7 +119,7 @@ export class SearchProvider {
   createResultObject(meta: {id: string}): ResultView | null {
     if (meta.id !== PAGE_RESULT_ID || !this._options.createView) return null;
     if (!this._view) {
-      const view = this._options.createView((query, limit, cancellable) => this.fetchLinks(query, limit, cancellable));
+      const view = this._options.createView();
       view.connect('destroy', () => {
         if (this._view === view) this._view = null;
       });
@@ -139,15 +128,6 @@ export class SearchProvider {
       view.setQuery(this._query);
     }
     return this._view;
-  }
-
-  /** The compact link list (SearXNG JSON) for the sidebar. */
-  async fetchLinks(query: string, limit: number, cancellable: Gio.Cancellable): Promise<LinkOutcome> {
-    const outcome = await fetchWebResults(query, this._options.instanceUrl, limit, cancellable);
-    if (outcome.status === 'ok') return {results: outcome.results, notice: null};
-    const notice = noticeFor(outcome);
-    if (notice) console.warn(`[SearchDoesSearch] ${outcome.status}: ${notice}`);
-    return {results: [], notice};
   }
 
   activateResult(_id: string, terms: string[]): void {
@@ -167,13 +147,18 @@ export class SearchProvider {
   private _scheduleRender(query: string): void {
     this._cancelDebounce();
     if (!this._options.renderer) return;
-    this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RENDER_DEBOUNCE_MS, () => {
+    const sinceLast = GLib.get_monotonic_time() / 1000 - this._lastRenderAt;
+    const wait = Math.max(RENDER_DEBOUNCE_MS, RENDER_MIN_INTERVAL_MS - sinceLast);
+    this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(wait), () => {
       this._debounceId = 0;
       if (query !== this._query || !this._options.renderer) return GLib.SOURCE_REMOVE;
-      // The same query coming back (the overview was reopened) keeps the page.
-      const reloading = query !== this._rendered;
+      // The same query coming back (the overview was reopened) keeps the page —
+      // unless the user followed links from it, in which case the results page
+      // is no longer what is showing and settling has to bring it back.
+      const reloading = query !== this._rendered || (this._view?.navigated ?? false);
       if (reloading) {
         this._rendered = query;
+        this._lastRenderAt = GLib.get_monotonic_time() / 1000;
         this._options.renderer.search(query, this._options.engine);
       }
       this._view?.querySettled(query, reloading);

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Search Does Search is a GNOME Shell extension that hooks into the Activities search bar via the **GNOME Search Provider API**. Its one result is the engine's rendered results page, shown live inside the overview: a companion WebKit process renders it off-screen and streams its pixels to an actor in the Shell, which streams the user's input back. An optional sidebar lists the result links from a user-run [SearXNG](https://docs.searxng.org/) instance (JSON API, fetched with `curl`). Every link opens in the user's default browser.
+Search Does Search is a GNOME Shell extension that hooks into the Activities search bar via the **GNOME Search Provider API**. Its one result is the engine's rendered results page, shown live inside the overview: a companion WebKit process renders it off-screen and streams its pixels to an actor in the Shell, which streams the user's input back. A clicked link is either followed inside that same view — with a back control counting the pages followed — or handed to the user's default browser, which the `link-mode` setting decides.
 
 ---
 
@@ -12,13 +12,14 @@ Search Does Search is a GNOME Shell extension that hooks into the Activities sea
 src/
 ├── extension.ts        ← Entry point. Lifecycle; wires provider, renderer client and view.
 ├── searchProvider.ts   ← GNOME Search Provider: one result, debounced render requests.
-├── pageView.ts         ← The overview actor: frame texture, input forwarding, sidebar, notices.
-├── rendererClient.ts   ← Spawns the renderer, D-Bus proxy, fans out Frame/State/Launched.
-├── webSearch.ts        ← SearXNG JSON query + instance/result URL validation (sidebar).
+├── pageView.ts         ← The overview actor: frame texture, input forwarding, header, notices.
+├── section.ts          ← The Shell's section for us: provider column, order, visibility.
+├── rendererClient.ts   ← Spawns the renderer, D-Bus proxy, fans out Frame/State/Nav/Launched/Refused.
 ├── browserLauncher.ts  ← Opens result URLs in the default browser.
-└── prefs.ts            ← Preferences window (engine, sidebar, SearXNG instance).
+└── prefs.ts            ← Preferences window (four enum keys).
 panel/
 └── sds-renderer.js     ← Off-screen WebKit renderer: frames out, input in (own process).
+stylesheet.css          ← Loaded by the Shell on enable; scoped to this section's own classes.
 ```
 
 ---
@@ -34,7 +35,8 @@ GNOME Shell calls getInitialResultSet(terms[])
         ▼
 searchProvider.ts
   → returns ['sds:page'] at once (the view persists across keystrokes)
-  → 450 ms after the terms hold still: rendererClient.search(query, engine)
+  → 200 ms after the terms hold still (and never twice inside 400 ms):
+    rendererClient.search(query, engine)
         │
         ▼
 rendererClient.ts ── D-Bus ──▶ panel/sds-renderer.js
@@ -45,32 +47,35 @@ rendererClient.ts ── D-Bus ──▶ panel/sds-renderer.js
 pageView.ts (the result actor)
   → maps each frame, uploads it as the actor's St.ImageContent
   → forwards pointer / scroll / key events to the renderer
-  → sidebar (if shown): webSearch.ts → curl GET {instance}/search?q=…&format=json
         │
-   User clicks a link in the page (or a sidebar row)
+   User clicks a link in the page
         │
-        ▼
-renderer decide-policy → browserLauncher rule (http/https only) → default browser
-  → Launched signal → Main.overview.hide()
+        ├─ link-mode = contained (default), plain click
+        │    → renderer follows it; depth counted when the load commits
+        │    → Nav(depth, title, uri) → pageView shows the back pill and the page's name
+        │    → Back() walks it down; a new Search() resets the depth to 0
+        │
+        └─ link-mode = browser, or middle/Ctrl+click, or a response WebKit cannot display
+             → http(s) only → default browser → Launched signal → Main.overview.hide()
 ```
 
 ---
 
 ## Key Design Decisions
 
-### Why SearXNG instead of scraping engines directly?
+### Why render the engine's own page instead of fetching results?
 
-The extension previously fetched engine HTML with `curl` and parsed it with a Lexbor-backed native helper. Only one engine (DuckDuckGo) stayed reliable; the rest rate-limited, CAPTCHA'd, or changed their markup on every deploy. Google is unreachable by scraping at all — it gates `/search` on the JavaScript runtime environment, refusing even a real browser engine with a warm session on its first request.
+The extension previously fetched engine HTML with `curl` and parsed it with a Lexbor-backed native helper, and later listed links from a user-run SearXNG instance. Both are gone: only one engine (DuckDuckGo) stayed reliable to scrape, the rest rate-limited, CAPTCHA'd or changed their markup on every deploy, and SearXNG asked the user to run a service to get a list the rendered page already shows. Rendering the engine's own page removes the parser, the C build dependency, the external service, and a whole class of breakage.
 
-Delegating to SearXNG removes an HTML parser, a C build dependency, and a whole class of breakage from this codebase, and it reaches Google's sanctioned Programmable Search endpoint as a side effect. The cost is an external service the user must run. Full measurements are in [GJS-PITFALLS.md](GJS-PITFALLS.md).
+Google is the exception worth naming: it gates `/search` on the JavaScript runtime environment and refuses even a real browser engine with a warm session on its first request from a flagged network. It stays selectable, and when it refuses, the renderer reports that rather than working around it. Full measurements are in [GJS-PITFALLS.md](GJS-PITFALLS.md).
 
-### Why does a failed lookup still produce a card?
+### Why is contained browsing not a browser?
 
-An empty result list is indistinguishable from "no matches", which made the previous backend very hard to diagnose. Every non-`ok` `SearchOutcome` becomes exactly one card that names the cause and opens the page that fixes it.
+Following a link in place needs history depth and a way back — nothing more. No forward, no address bar, no tabs, no downloads: each of those is a surface to secure and a behaviour to explain inside a search result. What the view cannot show (a download, a PDF, a `mailto:` link) leaves for the real browser, which is the one place those things are already handled properly.
 
-### Why validate the instance URL?
+### Why are non-http(s) links refused rather than handed over?
 
-It is a GSettings string handed to `curl`. `normalizeInstanceUrl()` accepts only `http`/`https` origins and discards any path, query, or fragment, so a bad setting cannot reach `file://` or `scp://`, and the caller fully controls the request path.
+Every URI reaching the navigation policy came from a remote page. `http` and `https` go to the browser or are followed in place; everything else — `mailto:`, `magnet:`, an app's own scheme — is refused, because handing an arbitrary page's URI to the desktop's handler list is a much larger surface than a search result needs. A refused click is reported in the header (the `Refused` signal), so it does not read as a broken view; a page's own `about:`/`blob:`/`data:` loads are machinery and are refused silently.
 
 ### Why Gio.AppInfo instead of xdg-open?
 
@@ -93,7 +98,7 @@ and only its pixels enter the Shell:
 ```
  GNOME Shell (extension)                    panel/sds-renderer.js (own process)
  ───────────────────────                    ──────────────────────────────────
- SearchProvider ── debounce 450 ms ──▶ Search(query, engine)   D-Bus method
+ SearchProvider ── debounce 200 ms ──▶ Search(query, engine)   D-Bus method
                                             │ WebKit2.WebView in a Gtk.OffscreenWindow
                                             │ (never shown; hardware acceleration off)
                                             ▼
@@ -107,10 +112,13 @@ and only its pixels enter the Shell:
                                             │ rebuilt as GdkEvents, gtk_widget_event(webview)
                                             ▼
                                         WebKit handles them: hover, scroll, focus, typing
+   PageView.header ◀── Nav(depth, title, uri) ── a link followed inside the view
+   Back() / OpenCurrent() / SetLinkMode(mode) ──▶  the back control and the mode
    Main.overview.hide() ◀── Launched(url) ── link click bridged to the default browser
 ```
 
-The renderer is spawned on the first search and kept alive (WebKit start-up is
+The renderer is spawned when the overview starts opening (`prewarm`, so WebKit's
+start-up overlaps the open animation) and kept alive (WebKit start-up is
 ~0.4 s; a new query on a warm renderer costs nothing extra). It serves the bus
 name `io.github.searchdoessearch.Renderer`, accepts calls only from its first
 caller, exits when that caller's bus name vanishes, on `Quit`, or after 15 minutes
@@ -177,9 +185,22 @@ activates the result, which opens the whole search in the browser.
 
 ### GSettings for preferences
 
-Schema `org.gnome.shell.extensions.search-does-search` stores `searxng-instance`
-(sidebar links) and the `panel-*` keys (engine, sidebar visibility/side/width/count).
-The former `max-results`, `search-engine` and `browser-command` keys are gone.
+Schema `org.gnome.shell.extensions.search-does-search`, four enum keys:
+`engine` (duckduckgo | google), `link-mode` (contained | browser),
+`section-visibility` (always | no-other-results) and `section-placement`
+(top | top-when-alone | default). The former `searxng-instance`, `panel-*`,
+`max-results`, `search-engine` and `browser-command` keys are gone.
+
+### Reaching into the Shell's search results
+
+`section.ts` uses three things the provider contract does not expose, each
+feature-detected and skipped if a future Shell moves it: `provider.display` (the
+section actor the Shell builds per provider) to hide its provider column and tag
+the card for our stylesheet; the display's parent box to move the section to the
+front; and the sibling sections' `provider` and visibility to answer "did
+anything else match?". The Shell has no "sweep finished" signal an extension can
+use — `SearchResultsView.searchInProgress` is a plain getter with no notify — so
+the decision is re-run whenever a sibling section shows or hides.
 
 ---
 
@@ -199,9 +220,8 @@ Nulling all references in `disable()` is mandatory — GNOME Shell does not garb
 
 | GNOME Version | Status |
 |---|---|
-| 45 | Supported (ES module extensions introduced) |
-| 46 | Supported |
-| 47 | Supported |
-| < 45 | Not supported |
+| 48–50 | Supported (developed and tested on 50.1) |
+| 45–47 | Not supported: `St.BoxLayout`'s `orientation` property is 48+, and the stylesheet uses the `-st-accent-color` variables (47+) |
+| < 45 | Not supported (no ES module extensions) |
 
-Build requires Node.js 20+. Runtime requires `curl` and a reachable SearXNG instance with `json` enabled under `search.formats`.
+Build requires Node.js 20+. Runtime requires GJS with the WebKit2 4.1 typelib for the renderer process; nothing else, and no service of the user's own.

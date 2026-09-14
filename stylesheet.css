@@ -1,0 +1,81 @@
+/* searchDOESsearch — overview section. All sizes are logical px; the Shell scales them. */
+
+/* The Shell's own card, only where section.ts has tagged it. The section box
+   itself carries .sds-search-section; the card inside it carries .sds-section. */
+.search-section-content.sds-section {
+  padding: 6px 12px 12px 12px;
+}
+
+/* Vertical box: header, then the page (or the notice). */
+.sds-page {
+  spacing: 4px;
+}
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+.sds-header {
+  min-height: 32px;
+  padding: 0 4px;
+  spacing: 8px;
+}
+.sds-title {
+  font-size: 1em;
+}
+/* Dim text is done with actor opacity in code (theme-proof), not a colour here. */
+.sds-hint {
+  font-size: 0.85em;
+}
+
+/* Back pill: accent-filled, the only coloured thing in the card. */
+.sds-back {
+  border-radius: 999px;
+  min-height: 28px;
+  padding: 0 10px 0 8px;
+  spacing: 6px;
+  background-color: -st-accent-color;
+  color: -st-accent-fg-color;
+  transition-duration: 100ms;
+}
+.sds-back:hover  { background-color: st-lighten(-st-accent-color, 6%); }
+.sds-back:active { background-color: st-darken(-st-accent-color, 6%); }
+.sds-back:focus  { box-shadow: inset 0 0 0 2px st-transparentize(-st-accent-fg-color, 0.5); }
+.sds-back StIcon { icon-size: 16px; -st-icon-style: symbolic; }
+/* The pill is an St.Button (a Bin): the gap belongs to the box inside it. */
+.sds-back-box { spacing: 6px; }
+
+/* Depth badge inside the pill: inverse of the pill. */
+.sds-back-badge {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background-color: -st-accent-fg-color;
+  color: -st-accent-color;
+  font-size: 0.75em;
+  font-weight: bold;
+  text-align: center;
+}
+
+/* "Open this page in your browser" — Shell's round icon button, only shown at depth ≥ 1. */
+.sds-open {
+  padding: 6px;
+}
+
+/* ── page ───────────────────────────────────────────────────────────────── */
+.sds-frame {
+  /* height is set in code (pageHeight()); width fills the card */
+}
+
+/* ── notice (blocked / error) ───────────────────────────────────────────── */
+.sds-notice {
+  padding: 48px 24px;
+  spacing: 8px;
+  max-width: 560px;
+}
+.sds-notice-title {
+  font-weight: bold;
+  font-size: 1.1em;
+}
+.sds-notice-buttons {
+  spacing: 12px;
+  padding-top: 8px;
+}
