@@ -61,10 +61,54 @@ make install
 # On X11, restart the shell without logging out:
 make restart
 
-# On Wayland / GNOME Shell 49+, use the development kit nested window:
-dbus-run-session -- gnome-shell --devkit
-# (Requires mutter-dev-bin on Ubuntu. --nested was removed in Shell 49/50.)
+# On Wayland, test the change in a nested session (see below):
+make nested
 ```
+
+### Testing a change without logging out (Wayland)
+
+GNOME caches every extension's ES modules for the life of a session, so on
+Wayland `gnome-extensions disable && enable` reloads nothing — changed code only
+runs in a *new* session. `scripts/nested-test.sh` builds the working tree,
+installs it, and starts one:
+
+```bash
+make nested                       # windowed: a devkit viewer on your desktop
+make nested-headless              # no window: a virtual monitor session
+./scripts/nested-test.sh --help   # all flags
+```
+
+Ctrl+C shuts the session down, stopping only the processes the script started.
+The shell log is kept (its path is printed); lines from this extension are
+streamed to the terminal as they arrive, or pass `--verbose` for all of them.
+
+Useful flags:
+
+| Flag | Why |
+|------|-----|
+| `--headless` | No viewer window — for SSH, a locked screen, or automated capture. |
+| `--gdr[=PORT]` | `--headless` only: run `gdrd` against the session so screenshot/input tooling can drive it. |
+| `--no-build` | Start a session against whatever is already installed. |
+| `--debug` | `SDS_DEBUG=1` in the session: frame timings and raw scroll events. |
+| `--timeout N` | Shut down after N seconds, for scripted runs. |
+
+Two GNOME 50 traps the script exists to keep you out of:
+
+* `--nested` no longer exists; mutter 50 dropped the X11-nested backend. The
+  windowed path is `gnome-shell --headless --devkit` plus a `mutter-devkit`
+  viewer launched against the **host** session. `--headless` names the backend,
+  not the visibility. Plain `dbus-run-session -- gnome-shell --devkit` lets
+  mutter spawn its own viewer on the *nested* `DISPLAY`, which dies on the
+  MIT-MAGIC-COOKIE and takes the shell with it ~2 s later.
+* Never pass `--virtual-monitor` alongside `--devkit`: devkit adds a monitor
+  sized to its window and the explicit one becomes primary, so the top bar
+  renders on the monitor you cannot see. Resize the window instead.
+
+The nested session shares `~/.local/share` and dconf with the host, so it loads
+the same installed extensions and the same enabled list — enabling the extension
+in it also enables it on the host. Pass `--no-enable` when that matters. Stray
+clicks would otherwise launch real browsers, so the session runs with
+`SDS_NO_LAUNCH=1` unless you pass `--allow-launch`.
 
 ### Watching for TypeScript errors (without building)
 
@@ -128,6 +172,7 @@ search-does-search/
 │   └── *.gschema.xml       ← GSettings schema (user preferences)
 ├── scripts/
 │   ├── build.mjs             ← TypeScript compile + dist assembly
+│   ├── nested-test.sh        ← Build + run in a nested shell (make nested)
 │   ├── keystroke-harness.js  ← Freeze regression test (make check-freeze)
 │   └── fetch-check.js        ← Live fetch smoke test (make check-fetch)
 ├── docs/
@@ -232,11 +277,12 @@ gjs -m -c 'import GdkPixbuf from "gi://GdkPixbuf"; import GLib from "gi://GLib";
   GdkPixbuf.Pixbuf.new_from_bytes(new GLib.Bytes(d), 0, true, 8, w, h, stride).savev("/tmp/frame.png","png",[],[]);'
 ```
 
-Headless verification without touching the desktop: `gnome-shell --headless
---virtual-monitor 1280x800 --wayland-display=wayland-sds` on a private
-`dbus-daemon --session` paints without any viewer; drive it through
-`org.gnome.Mutter.RemoteDesktop` (keep one bus connection for the session's
-lifetime — the session dies with the connection that created it).
+Headless verification without touching the desktop is what `make nested-headless`
+starts (`gnome-shell --headless --virtual-monitor` on a private bus paints
+without any viewer). Drive it through `org.gnome.Mutter.RemoteDesktop`, keeping
+one bus connection for the session's lifetime — the session dies with the
+connection that created it — or pass `--gdr` to have the script run `gdrd`
+against it for you.
 
 ### If the shell freezes while testing
 

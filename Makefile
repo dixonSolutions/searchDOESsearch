@@ -6,6 +6,8 @@
 #   make enable       - Enable the extension via gnome-extensions CLI
 #   make disable      - Disable the extension
 #   make restart      - Restart GNOME Shell (X11 only)
+#   make nested       - Build, install, and run it in a nested shell (windowed)
+#   make nested-headless - Same, but with no window (virtual monitor)
 #   make schemas      - Compile GSettings schemas
 #   make searxng      - Start a local SearXNG instance with JSON output enabled
 #   make searxng-stop - Remove that instance
@@ -26,8 +28,8 @@ SEARXNG_PORT      := 8888
 SEARXNG_INSTANCE  ?= http://localhost:$(SEARXNG_PORT)
 SEARXNG_CONTAINER := sds-searxng
 
-.PHONY: build install enable disable restart schemas searxng searxng-stop \
-        check check-freeze check-fetch pack clean logs
+.PHONY: build install enable disable restart nested nested-headless schemas \
+        searxng searxng-stop check check-freeze check-fetch pack clean logs
 
 # St and Meta ship outside the default typelib search path.
 SHELL_TYPELIBS := /usr/lib/gnome-shell:$(firstword $(wildcard /usr/lib/*/mutter-*))
@@ -64,6 +66,16 @@ disable:
 restart:
 	@echo "→ Restarting GNOME Shell (X11 only)..."
 	busctl --user call org.gnome.Shell /org/gnome/Shell org.gnome.Shell Eval s 'Meta.restart("Restarting…", global.context)'
+
+# Wayland has no equivalent of `make restart`: the Shell caches extension ES
+# modules for the life of the session, so changed code needs a new session.
+# scripts/nested-test.sh builds, installs, and starts one. Extra flags:
+#   make nested NESTED_ARGS="--debug --verbose"
+nested:
+	./scripts/nested-test.sh $(NESTED_ARGS)
+
+nested-headless:
+	./scripts/nested-test.sh --headless $(NESTED_ARGS)
 
 # SearXNG ships with JSON output disabled, so settings.yml is written before the
 # first real start. The generated file is owned by the container's uid — write it
