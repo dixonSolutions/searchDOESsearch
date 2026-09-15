@@ -3,29 +3,78 @@
   <schema id="org.gnome.shell.extensions.search-does-search"
           path="/org/gnome/shell/extensions/search-does-search/">
 
-    <key name="search-engine" type="s">
+    <!-- Four keys, all enums. The page is rendered by panel/sds-renderer.js (a
+         separate process — GNOME Shell cannot host WebKit) and shown in the
+         overview by the page view; these keys are read by the page view, the
+         section placement and the prefs UI. -->
+
+    <key name="engine" type="s">
+      <choices>
+        <choice value="duckduckgo"/>
+        <choice value="google"/>
+      </choices>
       <default>'duckduckgo'</default>
-      <summary>Default search engine</summary>
+      <summary>Results page engine</summary>
       <description>
-        The search engine used to build the query URL.
-        Accepted values for rendered results: 'duckduckgo' and 'google'.
+        Which engine's results page is rendered in the overview. DuckDuckGo's HTML
+        endpoint renders reliably; Google answers many networks (VPN exits in
+        particular) with its "unusual traffic" check, which is reported rather than
+        worked around.
       </description>
     </key>
 
-    <key name="browser-command" type="s">
-      <default>''</default>
-      <summary>Chrome or Chromium executable</summary>
+    <key name="link-mode" type="s">
+      <choices>
+        <choice value="contained"/>
+        <choice value="browser"/>
+      </choices>
+      <default>'contained'</default>
+      <summary>What a clicked link does</summary>
       <description>
-        Executable used for headless HTML rendering. Leave empty for automatic detection.
+        'contained' follows the link inside the overview's page and shows a back
+        control carrying how many pages you have followed; middle-click or
+        Ctrl+click still opens a link in the browser. 'browser' hands every link to
+        the default browser and closes the overview. Enter on the section always
+        opens what you are looking at in the browser.
+
+        Contained is not a browser: no forward, no address bar, no tabs. Anything
+        the view cannot display — a download, a PDF — goes to the real browser
+        whichever mode this is set to.
       </description>
     </key>
 
-    <key name="max-results" type="i">
-      <default>3</default>
-      <range min="1" max="5"/>
-      <summary>Maximum web results</summary>
+    <key name="section-visibility" type="s">
+      <choices>
+        <choice value="always"/>
+        <choice value="no-other-results"/>
+      </choices>
+      <default>'always'</default>
+      <summary>When the web results section is shown</summary>
       <description>
-        Maximum rendered results shown when GNOME has no system results.
+        'always' shows the section for every search. 'no-other-results' shows it
+        only when no application, file or other provider matched; your browser's own
+        "Search online" entry answers every query, so it does not count as a match.
+        The page is rendered either way, so showing it is instant.
+      </description>
+    </key>
+
+    <key name="section-placement" type="s">
+      <choices>
+        <choice value="top"/>
+        <choice value="top-when-alone"/>
+        <choice value="default"/>
+      </choices>
+      <default>'top-when-alone'</default>
+      <summary>Where the section sits among the search results</summary>
+      <description>
+        'top' pins the section above every other one. 'top-when-alone' moves it up
+        only when nothing else matched (the browser's "Search online" entry aside),
+        so a real app or file match is never pushed down the list. 'default' leaves
+        it where GNOME Shell puts it.
+
+        This moves the section, not the keyboard selection: GNOME picks what Enter
+        activates by provider registration order, so with another section showing,
+        Enter still goes to that one.
       </description>
     </key>
 

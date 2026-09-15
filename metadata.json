@@ -1,8 +1,9 @@
 {
   "name": "Search Does Search",
-  "description": "Shows rendered Google or DuckDuckGo results only when GNOME has no matching apps, files, or other system results.",
+  "description": "Web results directly in system search. Type in the GNOME overview and the engine's own results page renders right there in the search list — scroll it, click it, follow the links you click without leaving the overview. Nothing is handed to a browser until you ask for it, and which browser that is stays your system default.\n\nThe page is rendered by a separate process (GNOME Shell cannot host WebKit) and the query is sent to the engine you pick in the settings — DuckDuckGo or Google — and to no one else. Requires the WebKit2 4.1 GJS typelib: gir1.2-webkit2-4.1 on Debian and Ubuntu, webkit2gtk4.1 on Fedora.",
   "uuid": "search-does-search@searchdoessearch.github.io",
-  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "shell-version": ["48", "49", "50"],
+  "version-name": "1.0.0",
   "url": "https://github.com/dixonSolutions/searchDOESsearch",
   "settings-schema": "org.gnome.shell.extensions.search-does-search"
 }

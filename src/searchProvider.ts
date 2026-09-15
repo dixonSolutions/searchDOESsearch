@@ -1,63 +1,180 @@
 import St from 'gi://St';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import {openInDefaultBrowser} from './browserLauncher.js';
-import {WebResult, WebSearchEngine, fetchWebResults} from './webSearch.js';
 
 interface ResultMeta { id: string; name: string; description: string; createIcon: (size: number) => St.Widget; }
-export interface OtherResultsState { complete: boolean; hasResults: boolean; }
-export interface SearchProviderOptions { engine: WebSearchEngine; browserCommand: string; maxResults: number; getOtherResultsState: () => OtherResultsState; }
 
-function wait(ms: number, cancellable: Gio.Cancellable): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (cancellable.is_cancelled()) { reject(new Error('Search cancelled')); return; }
-    let cancelledId = 0;
-    const timeoutId = setTimeout(() => { if (cancelledId) cancellable.disconnect(cancelledId); resolve(); }, ms);
-    cancelledId = cancellable.connect(() => { clearTimeout(timeoutId); cancellable.disconnect(cancelledId); reject(new Error('Search cancelled')); });
-  });
+/**
+ * The actor shown in the overview for this provider's single result. It is
+ * built by the extension (it needs the Shell's St/Main modules, which do not
+ * exist in the headless test harness) and reused for the life of a search.
+ */
+export interface ResultView {
+  /** The overview's terms changed. */
+  setQuery(query: string): void;
+  /** The terms held still; `reloading` says the renderer was asked for a new page. */
+  querySettled(query: string, reloading: boolean): void;
+  /** True while the user is on a page they followed rather than the results page. */
+  readonly navigated: boolean;
+  connect(signal: 'destroy', callback: () => void): number;
+}
+
+export interface SearchProviderOptions {
+  /** Which engine's page is rendered: a value of the `engine` setting. */
+  engine: string;
+  /** Loads the page. Absent in the headless harness. */
+  renderer?: {search(query: string, engine: string): void};
+  /** Builds the overview actor. Absent in the headless harness. */
+  createView?: () => ResultView;
+}
+
+/**
+ * A keystroke changes the terms several times a second; the renderer loads the
+ * page only once they have held still this long. Meanwhile the view keeps the
+ * previous page and shows the new terms in its header.
+ *
+ * The page is not shown until it belongs to the terms on screen, so waiting
+ * longer buys nothing: the sooner the load starts, the sooner the skeleton is
+ * replaced by real results. 120ms is short enough to overlap the tail of a
+ * keystroke burst; the floor keeps a fast typist from queueing a load per word.
+ */
+const RENDER_DEBOUNCE_MS = 120;
+/** Never start two page loads closer together than this. */
+const RENDER_MIN_INTERVAL_MS = 300;
+
+const PAGE_RESULT_ID = 'sds:page';
+const BROWSER_URLS: Record<string, (q: string) => string> = {
+  duckduckgo: q => `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
+  google: q => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+};
+
+/**
+ * Section heading for the results (the extension's own name), and the reason this
+ * provider has an `appInfo` at all: providers with one render as a list section,
+ * providers without render as an icon grid, which cannot hold the page view.
+ * There is no installed .desktop file to point at, so a synthetic GAppInfo carries
+ * the name and icon; `should_show` is stubbed because the Shell calls it while
+ * building the section header.
+ */
+function createProviderAppInfo(): Gio.AppInfo {
+  const appInfo = Gio.AppInfo.create_from_commandline(
+    'true', 'searchDOESsearch', Gio.AppInfoCreateFlags.NONE);
+  appInfo.get_icon = () => new Gio.ThemedIcon({name: 'web-browser-symbolic'});
+  appInfo.should_show = () => true;
+  return appInfo;
 }
 
 export class SearchProvider {
   readonly id = 'search-does-search@searchdoessearch.github.io';
-  readonly appInfo = null;
-  readonly canLaunchSearch = false;
+  readonly appInfo = createProviderAppInfo();
+  /** The clickable section heading opens the same search in the browser. */
+  readonly canLaunchSearch = true;
   private _options: SearchProviderOptions;
-  private _results = new Map<string, WebResult>();
+  private _query = '';
+  private _rendered = '';
+  private _debounceId = 0;
+  private _lastRenderAt = 0;
+  private _view: ResultView | null = null;
 
   constructor(options: SearchProviderOptions) { this._options = options; }
-  updateOptions(options: Partial<Omit<SearchProviderOptions, 'getOtherResultsState'>>): void { this._options = {...this._options, ...options}; }
-
-  private async _hasOtherResults(cancellable: Gio.Cancellable): Promise<boolean> {
-    const deadline = Date.now() + 1200;
-    while (Date.now() < deadline) {
-      const state = this._options.getOtherResultsState();
-      if (state.hasResults || state.complete) return state.hasResults;
-      await wait(50, cancellable);
-    }
-    return this._options.getOtherResultsState().hasResults;
+  updateOptions(options: Partial<SearchProviderOptions>): void {
+    const engineChanged = options.engine !== undefined && options.engine !== this._options.engine;
+    this._options = {...this._options, ...options};
+    if (engineChanged) this._rendered = '';
   }
 
-  async getInitialResultSet(terms: string[], cancellable: Gio.Cancellable): Promise<string[]> {
+  /**
+   * One result, always the same id: the Shell keeps the actor it built for an id
+   * across term changes, so the page view persists while the user types and only
+   * the query it shows changes.
+   */
+  getInitialResultSet(terms: string[], cancellable: Gio.Cancellable): Promise<string[]> {
     const query = terms.join(' ').trim();
-    this._results.clear();
-    if (!query || await this._hasOtherResults(cancellable)) return [];
-    const results = await fetchWebResults(query, this._options.engine, this._options.browserCommand, this._options.maxResults, cancellable);
-    return results.map((result, index) => {
-      const id = `sds:${index}:${encodeURIComponent(result.url)}`;
-      this._results.set(id, result);
-      return id;
+    if (!query || cancellable.is_cancelled()) {
+      this._cancelDebounce();
+      return Promise.resolve([]);
+    }
+    this._query = query;
+    this._view?.setQuery(query);
+    this._scheduleRender(query);
+    return Promise.resolve([PAGE_RESULT_ID]);
+  }
+
+  getSubsearchResultSet(_previous: string[], terms: string[], cancellable: Gio.Cancellable): Promise<string[]> {
+    return this.getInitialResultSet(terms, cancellable);
+  }
+
+  getResultMetas(ids: string[], cancellable: Gio.Cancellable): Promise<ResultMeta[]> {
+    if (cancellable.is_cancelled()) return Promise.resolve([]);
+    return Promise.resolve(ids.flatMap(id => id === PAGE_RESULT_ID ? [{
+      id,
+      name: this._query || 'Web results',
+      description: '',
+      createIcon: (size: number) => new St.Icon({icon_name: 'web-browser-symbolic', icon_size: size}),
+    }] : []));
+  }
+
+  /** Shell hook: the actor for a result. Without a view factory (harness) the Shell's plain row is used. */
+  createResultObject(meta: {id: string}): ResultView | null {
+    if (meta.id !== PAGE_RESULT_ID || !this._options.createView) return null;
+    if (!this._view) {
+      const view = this._options.createView();
+      view.connect('destroy', () => {
+        if (this._view === view) this._view = null;
+      });
+      this._view = view;
+      // Rebuilt after the Shell cleared its results: the page may already be showing.
+      view.setQuery(this._query);
+    }
+    return this._view;
+  }
+
+  activateResult(_id: string, terms: string[]): void {
+    this.launchSearch(terms);
+  }
+
+  /** Section heading clicked (or Enter on the plain row): the search, in the browser. */
+  launchSearch(terms: string[]): void {
+    const query = terms.join(' ').trim();
+    if (!query) return;
+    const toUrl = BROWSER_URLS[this._options.engine] ?? BROWSER_URLS.duckduckgo;
+    openInDefaultBrowser(toUrl(query));
+  }
+
+  filterResults(results: string[], max: number): string[] { return results.slice(0, max); }
+
+  private _scheduleRender(query: string): void {
+    this._cancelDebounce();
+    if (!this._options.renderer) return;
+    const sinceLast = GLib.get_monotonic_time() / 1000 - this._lastRenderAt;
+    const wait = Math.max(RENDER_DEBOUNCE_MS, RENDER_MIN_INTERVAL_MS - sinceLast);
+    this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(wait), () => {
+      this._debounceId = 0;
+      if (query !== this._query || !this._options.renderer) return GLib.SOURCE_REMOVE;
+      // The same query coming back (the overview was reopened) keeps the page —
+      // unless the user followed links from it, in which case the results page
+      // is no longer what is showing and settling has to bring it back.
+      const reloading = query !== this._rendered || (this._view?.navigated ?? false);
+      if (reloading) {
+        this._rendered = query;
+        this._lastRenderAt = GLib.get_monotonic_time() / 1000;
+        this._options.renderer.search(query, this._options.engine);
+      }
+      this._view?.querySettled(query, reloading);
+      return GLib.SOURCE_REMOVE;
     });
   }
 
-  getSubsearchResultSet(_previous: string[], terms: string[], cancellable: Gio.Cancellable): Promise<string[]> { return this.getInitialResultSet(terms, cancellable); }
-  getResultMetas(ids: string[], cancellable: Gio.Cancellable): Promise<ResultMeta[]> {
-    if (cancellable.is_cancelled()) return Promise.resolve([]);
-    return Promise.resolve(ids.flatMap(id => {
-      const result = this._results.get(id);
-      return result ? [{id, name: result.title, description: result.description || result.displayUrl,
-        createIcon: (size: number) => new St.Icon({icon_name: 'web-browser-symbolic', icon_size: size})}] : [];
-    }));
+  private _cancelDebounce(): void {
+    if (this._debounceId) GLib.source_remove(this._debounceId);
+    this._debounceId = 0;
   }
-  activateResult(id: string, _terms: string[]): void { const result = this._results.get(id); if (result) openInDefaultBrowser(result.url); }
-  filterResults(results: string[], max: number): string[] { return results.slice(0, max); }
-  destroy(): void { this._results.clear(); }
+
+  destroy(): void {
+    this._cancelDebounce();
+    this._query = '';
+    this._rendered = '';
+    this._view = null;
+  }
 }

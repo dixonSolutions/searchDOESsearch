@@ -1,0 +1,108 @@
+name: Package repositories
+
+# Builds the signed APT and DNF repositories and publishes them as the Pages
+# site. Runs on a release tag, on a change to the packaging itself, or by hand.
+#
+# Requires two repository secrets, created by scripts/bootstrap-signing-key.sh:
+#   SDS_GPG_PRIVATE_KEY  armoured private key that signs Release/repomd/the rpm
+#   SDS_GPG_KEY_ID       its long key id
+#
+# A `paths` filter would apply to tag pushes too, where there is no diff to match
+# against, so a tagged release would silently never publish. Tags and manual
+# dispatch only.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install build and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            gnome-shell libglib2.0-bin rpm createrepo-c gnupg
+
+      - run: npm ci
+      - run: npm run lint
+
+      - name: Build the extension
+        run: make build
+
+      - name: Build packages
+        run: |
+          ./packaging/build-deb.sh
+          ./packaging/build-rpm.sh
+          ls -l build/packages
+
+      - name: Import the signing key
+        env:
+          SDS_GPG_PRIVATE_KEY: ${{ secrets.SDS_GPG_PRIVATE_KEY }}
+          SDS_GPG_KEY_ID: ${{ secrets.SDS_GPG_KEY_ID }}
+        run: |
+          if [ -z "$SDS_GPG_PRIVATE_KEY" ]; then
+            echo "::error::SDS_GPG_PRIVATE_KEY is not set. Run scripts/bootstrap-signing-key.sh locally to create the key and upload both secrets."
+            exit 1
+          fi
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$SDS_GPG_PRIVATE_KEY" | gpg --batch --quiet --import
+          KEY_ID="${SDS_GPG_KEY_ID:-$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "sec" { print $5; exit }')}"
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::imported no usable secret key"
+            exit 1
+          fi
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "SDS_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+
+      - name: Build the signed repositories
+        run: ./packaging/build-repos.sh --key "$SDS_KEY_ID" --out build/pages
+
+      - name: Check the published key matches the one in the tree
+        run: |
+          # A mismatch means the secret was rotated without committing the new
+          # public half — users would fetch a key that cannot verify anything.
+          a="$(gpg --batch --dearmor < packaging/KEY.gpg | sha256sum | cut -d' ' -f1)"
+          b="$(gpg --batch --dearmor < build/pages/KEY.gpg | sha256sum | cut -d' ' -f1)"
+          if [ "$a" != "$b" ]; then
+            echo "::error::packaging/KEY.gpg does not match the key CI signed with. Re-export it: gpg --armor --export \$KEY_ID > packaging/KEY.gpg"
+            exit 1
+          fi
+          echo "public key in the tree matches the signing key"
+
+      - name: Verify the repositories as a client would
+        run: ./packaging/verify-repos.sh --site build/pages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

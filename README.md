@@ -1,46 +1,94 @@
 # Search Does Search
 
-A GNOME Shell extension that puts you back in control of your search bar.
+**Web results directly in system search.**
 
-When you type in the Activities overlay, instead of your browser automatically hijacking your query, **Search Does Search** shows a result card directly in the search overlay. You choose when to open it in the browser — and which browser you use is entirely up to your system defaults.
+Press Super, type, and the engine's own results page renders right there in the
+GNOME overview — scroll it, click it, follow the links you click without ever
+leaving it. Nothing is handed to a browser until you ask for it, and which
+browser that is stays your system default.
+
+![Typing a query in the GNOME overview and getting a live, scrollable results page in the search list](docs/media/demo.gif)
 
 ---
 
 ## Features
 
 - Intercepts queries in the GNOME Activities search bar
-- Renders up to five real web results with Chrome/Chromium's Blink engine
-- Only searches the web when apps, files, and other system providers find nothing
-- Uses native GNOME result cards, inheriting the system light/dark theme
-- Opens the search in your **default browser** (Firefox, Chrome, Brave, Chromium — anything)
-- Supports DuckDuckGo (default) and Google result parsing
-- Engine preference is configurable via GSettings
-- Cancels stale renders as the query changes and limits each render to eight seconds
+- Shows the engine's **rendered results page inside the overview** — scroll it, click it, use the keyboard in it
+- **Follows the links you click, in place**, with a back control counting how many pages deep you are — or hands them to your browser, whichever you set
+- Opens in your **default browser** when you ask it to (Firefox, Chrome, Brave, Chromium — anything)
+- Decides for itself **when to appear**: every search, or only when nothing else matched
+- Queries never touch a third party you did not choose
+- Debounces keystrokes, and warms the renderer while the overview opens
 - Works on X11 and Wayland
-- Compatible with GNOME Shell 45, 46, 47
+- Compatible with GNOME Shell 48, 49 and 50
 
 ---
 
 ## Requirements
 
-- GNOME Shell 45 or later
-- Ubuntu 23.10+ / Fedora 39+ / any distro running GNOME 45+
-- Google Chrome or Chromium *(for rendering web results)*
-- Node.js 20+ *(for building from source)*
+- GNOME Shell 48, 49 or 50
+- The WebKit2 4.1 GJS typelib — the renderer process:
+  `gir1.2-webkit2-4.1` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora.
+  The packages below depend on it; the zip and source installs do not, so
+  install it yourself if the section reports the renderer is missing.
+- Node.js 20+ *(only to build from source)*
+
+No account, no API key, and no service of your own to run.
 
 ---
 
 ## Installation
 
-### From extensions.gnome.org *(once published)*
+### Debian / Ubuntu
 
-Visit the extension page and click the toggle to install.
+A signed APT repository, so upgrades arrive with the rest of your system
+updates:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg \
+  | sudo tee /etc/apt/keyrings/searchdoessearch.asc > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/searchdoessearch.asc] https://dixonsolutions.github.io/searchDOESsearch/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/searchdoessearch.list > /dev/null
+sudo apt update && sudo apt install gnome-shell-extension-search-does-search
+```
+
+### Fedora / RHEL / openSUSE
+
+```bash
+sudo curl -fsSL -o /etc/yum.repos.d/searchdoessearch.repo \
+  https://dixonsolutions.github.io/searchDOESsearch/searchdoessearch.repo
+sudo dnf install gnome-shell-extension-search-does-search
+```
+
+Both repositories are signed by the key published at
+[KEY.gpg](https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg), which is
+also committed in this repository as `packaging/KEY.gpg`, so the two can be
+compared. A packaged extension installs system-wide and is **not** enabled for
+you: log out and back in so the session picks it up, then
+
+```bash
+gnome-extensions enable search-does-search@searchdoessearch.github.io
+```
+
+### From a release zip
+
+A per-user install, no root and no repository — but nothing updates it for you:
+
+```bash
+curl -fsSLO https://github.com/dixonSolutions/searchDOESsearch/releases/latest/download/search-does-search@searchdoessearch.github.io.shell-extension.zip
+gnome-extensions install --force search-does-search@searchdoessearch.github.io.shell-extension.zip
+gnome-extensions enable search-does-search@searchdoessearch.github.io
+```
+
+Every release also carries the `.deb` and the `.rpm` as direct downloads.
 
 ### From source
 
 ```bash
-git clone https://github.com/searchdoessearch/search-does-search
-cd search-does-search
+git clone https://github.com/dixonSolutions/searchDOESsearch
+cd searchDOESsearch
 
 npm install
 make install
@@ -57,19 +105,71 @@ make enable
 
 1. Press the **Super key** to open Activities
 2. Start typing any search query
-3. The **"Search the web for..."** result card appears
-4. Press **Enter** or click the card to open it in your default browser
+3. Once you pause, the engine's results page renders in the **searchDOESsearch** section
+4. Scroll or click the page. A clicked link opens **in place**, and a back control
+   appears at the right of the section's header carrying how many pages you have
+   followed; press it (or **Alt+Left**, or your mouse's back button) until it
+   disappears and you are back at your results.
+   **Enter** opens what you are looking at in your real browser — the search at
+   the results page, that page once you have followed a link. So does
+   middle-click or **Ctrl+click** on any link.
 
-To change the search engine:
-```bash
-gsettings set org.gnome.shell.extensions.search-does-search search-engine google
-# Options: duckduckgo, google
-```
+Four settings, all in Extension Settings: which engine's page is rendered
+(DuckDuckGo or Google), whether links open in the overview or in your browser,
+whether the section shows for every search or only when nothing else matched, and
+whether it is moved above the other sections.
 
-The query is sent to the configured search engine only after GNOME's local and
-application providers return no results. Rich result cards are rendered by a
-temporary headless browser profile; activating a card opens its URL in the
-system default browser.
+**Why DuckDuckGo's page?** Because of the engines tested, only its HTML endpoint
+stayed reliable: Mojeek rate-limits to roughly one query per 30–60 seconds per
+IP, Brave's markup is build-hashed and breaks on every deploy, and Bing and
+Startpage answer with CAPTCHAs.
+
+Google is worth spelling out, because "just render the JavaScript" is such an
+obvious idea. Its response to a scripted client is 168 characters of redirect
+notice with no result data in it at all, and adding a full Chrome header set,
+cookie jar, and warm session returns the byte-identical page. Rendering it in a
+real browser engine does not help either: WebKitGTK on a rested IP loads
+`google.com` perfectly and is then refused at `/search` on the *first* request.
+The gate is on the JavaScript runtime environment, not on behaviour, so no amount
+of simulated human activity reaches it. Google stays selectable because on an
+unflagged network it works; when it does not, the extension says so rather than
+pretending. The full measurements are in
+[docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md).
+
+### The results page, inside the overview
+
+The **searchDOESsearch** section of the overview shows the engine's real results
+page, rendered, with its search form, logo and header stripped — and it is live:
+scroll it, hover it, click it, Tab through its links, press PageDown. GNOME Shell
+cannot host GTK or WebKit widgets (it is the compositor), so the page is rendered
+by a companion process, `panel/sds-renderer.js` (GJS + Gtk 3 + WebKit2 4.1),
+into an off-screen window that never appears on screen. Every repaint is exported
+as raw pixels through a file in `$XDG_RUNTIME_DIR` and uploaded by the extension
+as the texture of an actor in the overview; the actor forwards your pointer,
+scroll and key events back to the renderer, which replays them as real GDK events
+on the WebView. Measured on a 812×464 page: one wheel notch shows in the overview
+27–39 ms later; nothing repaints while idle.
+
+- A clicked link is **followed in the same view** (the default) or handed to your
+  browser, which closes the overview. Only navigation decisions are intercepted,
+  so scrolling, selection, focus and clicks are WebKit's own behaviour.
+- Followed pages get a back control and nothing else: no forward, no address bar,
+  no tabs. It is a way back to your search, not a browser. Anything the view
+  cannot show — a download, a PDF — goes to your real browser whichever mode you
+  are in, and a link that is not a web page (`mailto:`, an app scheme) is refused
+  and said so in the header.
+- Click the page to give it the keyboard; **Escape** hands it back to the search
+  entry. The section heading opens the same search in your browser.
+- Everything follows the system theme, including the light/dark preference.
+  There is no theme setting: the overview widgets use the Shell's own style
+  classes, and the stylesheet injected into the page takes its colours and font
+  from the running GTK theme (`theme_base_color`, the `:link` colour,
+  `gtk-font-name`), so the page matches whatever the rest of the desktop looks like.
+- **Engine:** DuckDuckGo's HTML endpoint renders reliably. Google is selectable,
+  but from a flagged network (VPN exits in particular) it answers `/sorry`
+  ("unusual traffic") even with a persistent cookie profile and a browser user
+  agent; the renderer detects that page, stops, and the overview offers DuckDuckGo
+  or your browser. It does not attempt to get past the check.
 
 ---
 
@@ -78,6 +178,10 @@ system default browser.
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development guide including debugging, the build loop, and how to add new search engines.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the extension works internally.
+
+See [docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md) before changing anything on the
+search path — this code runs inside the compositor, where a blocked main loop
+freezes the whole desktop. Run `make check` before every commit.
 
 See [docs/PUBLISHING.md](docs/PUBLISHING.md) for the submission process to extensions.gnome.org.
 
@@ -89,12 +193,25 @@ See [docs/PUBLISHING.md](docs/PUBLISHING.md) for the submission process to exten
 src/
 ├── extension.ts        ← Extension lifecycle (enable / disable)
 ├── searchProvider.ts   ← GNOME Search Provider API implementation
-└── browserLauncher.ts  ← URL building and default browser launch
+├── pageView.ts         ← The overview widget: page texture, input forwarding, back control
+├── section.ts          ← Where the section sits in the results, and whether it shows
+├── rendererClient.ts   ← Spawns and talks to the renderer over D-Bus
+├── browserLauncher.ts  ← Default browser launch
+└── prefs.ts            ← Preferences window
+stylesheet.css          ← Styling for this section only (the Shell loads it on enable)
+panel/
+└── sds-renderer.js     ← Off-screen WebKit renderer process (frames + input)
+scripts/
+├── build.mjs           ← tsc + static asset copy
+├── nested-test.sh      ← Build + run it all in a nested GNOME session
+└── keystroke-harness.js ← Cancel-per-keystroke freeze regression test
 schemas/
 └── *.gschema.xml       ← GSettings schema for preferences
 docs/
 ├── ARCHITECTURE.md
+├── DESIGN-overview-ui.md
 ├── DEVELOPMENT.md
+├── GJS-PITFALLS.md
 └── PUBLISHING.md
 ```
 

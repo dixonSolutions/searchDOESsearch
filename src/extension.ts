@@ -1,60 +1,73 @@
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Gio from 'gi://Gio';
-import {OtherResultsState, SearchProvider} from './searchProvider.js';
-import {WebSearchEngine} from './webSearch.js';
-
-interface ShellProvider { id?: string; searchInProgress?: boolean; }
-interface SearchResultsInternals { _providers?: ShellProvider[]; _results?: Record<string, string[]>; }
-interface SearchControllerInternals { _searchResults?: SearchResultsInternals; }
+import GLib from 'gi://GLib';
+import {PageView, linkModeOf} from './pageView.js';
+import {RendererClient} from './rendererClient.js';
+import {SearchProvider, SearchProviderOptions} from './searchProvider.js';
+import {SectionPlacement} from './section.js';
 
 export default class SearchDoesSearchExtension extends Extension {
   private _provider: SearchProvider | null = null;
+  private _renderer: RendererClient | null = null;
+  private _placement: SectionPlacement | null = null;
   private _settings: Gio.Settings | null = null;
   private _settingsChangedId = 0;
+  private _overviewShowingId = 0;
 
-  private _getOtherResultsState(): OtherResultsState {
-    // The public provider API isolates providers. Aggregate Shell state is
-    // required to make this a true fallback for apps, files, and other results.
-    const controller = Main.overview.searchController as unknown as SearchControllerInternals;
-    const view = controller._searchResults;
-    const providers = view?._providers ?? [];
-    const results = view?._results ?? {};
-    const others = providers.filter(provider => provider.id !== this._provider?.id);
-    return {
-      complete: others.every(provider => provider.searchInProgress !== true),
-      hasResults: others.some(provider => (results[provider.id ?? '']?.length ?? 0) > 0),
-    };
-  }
-
-  private _readOptions(): {engine: WebSearchEngine; browserCommand: string; maxResults: number} {
-    return {
-      engine: this._settings?.get_string('search-engine') === 'google' ? 'google' : 'duckduckgo',
-      browserCommand: this._settings?.get_string('browser-command') ?? '',
-      maxResults: this._settings?.get_int('max-results') ?? 3,
-    };
+  private _readOptions(): Partial<SearchProviderOptions> {
+    return {engine: this._settings?.get_string('engine') ?? 'duckduckgo'};
   }
 
   enable(): void {
-    this._settings = this.getSettings();
-    this._provider = new SearchProvider({...this._readOptions(), getOtherResultsState: this._getOtherResultsState.bind(this)});
-    this._settingsChangedId = this._settings.connect(
-      'changed',
-      () => this._provider?.updateOptions(this._readOptions())
-    );
-    Main.overview.searchController.addProvider(this._provider);
+    const settings = this._settings = this.getSettings();
+    // The page is rendered by a separate process (the Shell cannot host WebKit)
+    // and shown inside the overview by the PageView; see panel/sds-renderer.js.
+    const renderer = this._renderer = new RendererClient(
+      GLib.build_filenamev([this.path, 'panel', 'sds-renderer.js']));
+    renderer.setLinkMode(linkModeOf(settings));
+
+    const provider = this._provider = new SearchProvider({
+      engine: settings.get_string('engine'),
+      renderer,
+      createView: () => {
+        const view = new PageView({renderer, settings});
+        // The Shell has built the section by the time it asks for the actor,
+        // which is the first moment there is anything to place.
+        this._placement?.attach();
+        return view;
+      },
+    });
+    this._placement = new SectionPlacement(settings, provider as unknown as {display?: never});
+
+    this._settingsChangedId = settings.connect('changed', (_s: Gio.Settings, key: string) => {
+      this._provider?.updateOptions(this._readOptions());
+      if (key === 'link-mode') this._renderer?.setLinkMode(linkModeOf(settings));
+    });
+    // Starting WebKit costs about 0.4s. Paying it while the overview animates
+    // open means the first keystroke meets a warm renderer.
+    this._overviewShowingId = Main.overview.connect('showing', () => this._renderer?.prewarm());
+    Main.overview.searchController.addProvider(provider);
   }
 
   disable(): void {
+    if (this._overviewShowingId) {
+      Main.overview.disconnect(this._overviewShowingId);
+      this._overviewShowingId = 0;
+    }
     if (this._settings && this._settingsChangedId) {
       this._settings.disconnect(this._settingsChangedId);
       this._settingsChangedId = 0;
     }
+    this._placement?.destroy();
+    this._placement = null;
     if (this._provider) {
       Main.overview.searchController.removeProvider(this._provider);
       this._provider.destroy();
       this._provider = null;
     }
+    this._renderer?.destroy();
+    this._renderer = null;
     this._settings = null;
   }
 }
