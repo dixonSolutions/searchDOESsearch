@@ -1,8 +1,13 @@
 # Search Does Search
 
-A GNOME Shell extension that puts you back in control of your search bar.
+**Web results directly in system search.**
 
-When you type in the Activities overlay, instead of your browser automatically hijacking your query, **Search Does Search** shows a result card directly in the search overlay. You choose when to open it in the browser — and which browser you use is entirely up to your system defaults.
+Press Super, type, and the engine's own results page renders right there in the
+GNOME overview — scroll it, click it, follow the links you click without ever
+leaving it. Nothing is handed to a browser until you ask for it, and which
+browser that is stays your system default.
+
+![Typing a query in the GNOME overview and getting a live, scrollable results page in the search list](docs/media/demo.gif)
 
 ---
 
@@ -16,16 +21,18 @@ When you type in the Activities overlay, instead of your browser automatically h
 - Queries never touch a third party you did not choose
 - Debounces keystrokes, and warms the renderer while the overview opens
 - Works on X11 and Wayland
-- Compatible with GNOME Shell 45–50
+- Compatible with GNOME Shell 48, 49 and 50
 
 ---
 
 ## Requirements
 
-- GNOME Shell 45 or later
-- Ubuntu 23.10+ / Fedora 39+ / any distro running GNOME 45+
-- GJS with WebKit2 4.1 typelib (`gir1.2-webkit2-4.1` on Debian/Ubuntu) — the renderer process
-- Node.js 20+ *(for building from source)*
+- GNOME Shell 48, 49 or 50
+- The WebKit2 4.1 GJS typelib — the renderer process:
+  `gir1.2-webkit2-4.1` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora.
+  The packages below depend on it; the zip and source installs do not, so
+  install it yourself if the section reports the renderer is missing.
+- Node.js 20+ *(only to build from source)*
 
 No account, no API key, and no service of your own to run.
 
@@ -33,15 +40,55 @@ No account, no API key, and no service of your own to run.
 
 ## Installation
 
-### From extensions.gnome.org *(once published)*
+### Debian / Ubuntu
 
-Visit the extension page and click the toggle to install.
+A signed APT repository, so upgrades arrive with the rest of your system
+updates:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg \
+  | sudo tee /etc/apt/keyrings/searchdoessearch.asc > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/searchdoessearch.asc] https://dixonsolutions.github.io/searchDOESsearch/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/searchdoessearch.list > /dev/null
+sudo apt update && sudo apt install gnome-shell-extension-search-does-search
+```
+
+### Fedora / RHEL / openSUSE
+
+```bash
+sudo curl -fsSL -o /etc/yum.repos.d/searchdoessearch.repo \
+  https://dixonsolutions.github.io/searchDOESsearch/searchdoessearch.repo
+sudo dnf install gnome-shell-extension-search-does-search
+```
+
+Both repositories are signed by the key published at
+[KEY.gpg](https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg), which is
+also committed in this repository as `packaging/KEY.gpg`, so the two can be
+compared. A packaged extension installs system-wide and is **not** enabled for
+you: log out and back in so the session picks it up, then
+
+```bash
+gnome-extensions enable search-does-search@searchdoessearch.github.io
+```
+
+### From a release zip
+
+A per-user install, no root and no repository — but nothing updates it for you:
+
+```bash
+curl -fsSLO https://github.com/dixonSolutions/searchDOESsearch/releases/latest/download/search-does-search@searchdoessearch.github.io.shell-extension.zip
+gnome-extensions install --force search-does-search@searchdoessearch.github.io.shell-extension.zip
+gnome-extensions enable search-does-search@searchdoessearch.github.io
+```
+
+Every release also carries the `.deb` and the `.rpm` as direct downloads.
 
 ### From source
 
 ```bash
-git clone https://github.com/searchdoessearch/search-does-search
-cd search-does-search
+git clone https://github.com/dixonSolutions/searchDOESsearch
+cd searchDOESsearch
 
 npm install
 make install

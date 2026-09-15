@@ -13,6 +13,10 @@
 #   make check-freeze - Regression test: cancel-per-keystroke must never block
 #   make check-provider - Regression test: when a page load is (and is not) issued
 #   make pack         - Package extension into .zip for extensions.gnome.org
+#   make deb          - Build the .deb (system-scope install)
+#   make rpm          - Build the .rpm (system-scope install)
+#   make repos        - Build the signed APT + DNF site (needs SDS_KEY_ID)
+#   make verify-repos - Check that site the way apt and dnf will
 #   make clean        - Remove dist/ and compiled schemas
 #   make logs         - Tail GNOME Shell logs (useful for debugging)
 
@@ -22,7 +26,7 @@ EXT_DIR    := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA_DIR := $(DIST)/schemas
 
 .PHONY: build install enable disable restart nested nested-headless schemas \
-        check check-freeze check-provider pack clean logs
+        check check-freeze check-provider pack deb rpm repos verify-repos clean logs
 
 # St and Meta ship outside the default typelib search path.
 SHELL_TYPELIBS := /usr/lib/gnome-shell:$(firstword $(wildcard /usr/lib/*/mutter-*))
@@ -111,6 +115,23 @@ pack: build
 		--force \
 		--out-dir=.
 	@echo "✓ Package created — ready to upload to extensions.gnome.org"
+
+# ── Distribution packages ───────────────────────────────────────────────────
+# Unlike the zip, these install into /usr/share and therefore ship no schemas/
+# subfolder — see packaging/build-deb.sh for why that distinction matters.
+deb: build
+	./packaging/build-deb.sh
+
+rpm: build
+	./packaging/build-rpm.sh
+
+# SDS_KEY_ID is the signing key id from scripts/bootstrap-signing-key.sh.
+repos: deb rpm
+	@test -n "$(SDS_KEY_ID)" || { echo "repos: set SDS_KEY_ID=<key id>"; exit 1; }
+	./packaging/build-repos.sh --key "$(SDS_KEY_ID)" --out build/pages
+
+verify-repos:
+	./packaging/verify-repos.sh --site build/pages
 
 clean:
 	rm -rf dist/

@@ -25,21 +25,58 @@ jobs:
           node-version: 22
           cache: npm
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install --yes gnome-shell libglib2.0-bin
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            gnome-shell libglib2.0-bin rpm
       - run: npm ci
       - run: npm run lint
       - run: make pack
+
       - name: Verify release contents
         run: |
-          unzip -l search-does-search@searchdoessearch.github.io.shell-extension.zip > contents.txt
-          for file in extension.js searchProvider.js browserLauncher.js webSearch.js metadata.json schemas/org.gnome.shell.extensions.search-does-search.gschema.xml; do
-            grep -F "$file" contents.txt
+          ZIP=search-does-search@searchdoessearch.github.io.shell-extension.zip
+          unzip -l "$ZIP" > contents.txt
+          # Every module the Shell imports at runtime, plus the renderer the
+          # extension spawns. A missing one produces an extension that installs
+          # and then does nothing, which is the failure this check exists for.
+          for file in extension.js searchProvider.js section.js pageView.js \
+                      rendererClient.js browserLauncher.js prefs.js \
+                      panel/sds-renderer.js stylesheet.css metadata.json \
+                      schemas/org.gnome.shell.extensions.search-does-search.gschema.xml; do
+            grep -F "$file" contents.txt || { echo "::error::$file missing from $ZIP"; exit 1; }
           done
+
+      - name: Build distribution packages
+        run: |
+          ./packaging/build-deb.sh
+          ./packaging/build-rpm.sh
+          ls -l build/packages
+
+      - name: Check the packaged extension has no schemas/ subfolder
+        run: |
+          # gnome-shell only falls back to its own prefix for a system extension
+          # when the extension directory carries no schemas/ of its own, so a
+          # packaged copy of one silently shadows the upgraded schema.
+          if dpkg-deb -c build/packages/*.deb | grep -q 'extensions/.*/schemas/'; then
+            echo "::error::the .deb ships a schemas/ subfolder inside the extension directory"
+            exit 1
+          fi
+          if rpm -qpl build/packages/*.rpm | grep -q 'extensions/.*/schemas/'; then
+            echo "::error::the .rpm ships a schemas/ subfolder inside the extension directory"
+            exit 1
+          fi
+          echo "system-scope schema layout is correct"
+
       - uses: actions/upload-artifact@v4
         with:
           name: shell-extension
-          path: search-does-search@searchdoessearch.github.io.shell-extension.zip
+          path: |
+            search-does-search@searchdoessearch.github.io.shell-extension.zip
+            build/packages/*.deb
+            build/packages/*.rpm
           if-no-files-found: error
+
       - name: Upload to extensions.gnome.org
         if: github.event_name == 'workflow_dispatch' && inputs.publish_ego
         env:
@@ -60,4 +97,10 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --generate-notes search-does-search@searchdoessearch.github.io.shell-extension.zip
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --generate-notes \
+            search-does-search@searchdoessearch.github.io.shell-extension.zip \
+            build/packages/*.deb \
+            build/packages/*.rpm
