@@ -182,6 +182,31 @@ installed — `gir1.2-webkit2-4.1` on Debian and Ubuntu, `webkit2gtk4.1` on
 Fedora. The repository packages depend on it; the zip and source installs
 cannot.
 
+### If you have installed it more than one way
+
+GNOME loads a **per-user copy in preference to a system one**. If you ever
+installed the zip or ran `make install`, that copy shadows the package: the
+Extensions app shows the old one, and an upgrade through apt or dnf changes
+nothing you can see. `gnome-extensions info` prints the path it is actually
+loading —
+
+```bash
+gnome-extensions info search-does-search@searchdoessearch.github.io | grep Path
+```
+
+— and if that says `~/.local/share`, remove it so the packaged copy takes over:
+
+```bash
+gnome-extensions uninstall search-does-search@searchdoessearch.github.io
+```
+
+Then log out and back in. GNOME Shell caches extension code for the life of a
+session, so switching copies — or upgrading one — is only picked up by a new
+session. Until then the old code keeps running against the new settings schema,
+which is its own kind of confusing: the extension shows as **Error** in the
+Extensions app, and the overview can sit on *Searching* forever, because a
+provider that failed to load never answers.
+
 ### Uninstalling
 
 ```bash

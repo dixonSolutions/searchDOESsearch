@@ -31,6 +31,14 @@ jobs:
             gnome-shell libglib2.0-bin rpm
       - run: npm ci
       - run: npm run lint
+
+      # A wrong resource:/// path type-checks, packs, and installs cleanly, then
+      # fails in whichever process imports it. One shipped: prefs pointed at
+      # resource:///org/gnome/shell/extensions/prefs.js, which the Shell has
+      # never had, and every settings window raised an ImportError.
+      - name: Check resource:/// imports resolve
+        run: gjs -m scripts/check-resource-imports.js
+
       - run: make pack
 
       - name: Verify release contents
