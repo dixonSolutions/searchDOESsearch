@@ -103,6 +103,9 @@ chmod 755 "${STAGE}/DEBIAN/postrm"
 
 # ── Build ───────────────────────────────────────────────────────────────────
 mkdir -p "$OUT_DIR"
+# Drop older builds of this package: leaving them means a later step can pick up
+# a stale version, and publishing yesterday's package is worse than failing.
+find "$OUT_DIR" -maxdepth 1 -name "${PKG_NAME}_*.deb" -delete
 DEB="${OUT_DIR}/${PKG_NAME}_${VERSION}-${RELEASE}_all.deb"
 # Reproducible: dpkg-deb stamps mtimes, so pin them to the source commit date.
 SOURCE_DATE="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --pretty=%ct 2>/dev/null || date +%s)}"

@@ -35,9 +35,10 @@ done
 
 [[ -n "$KEY_ID" ]] || { echo "build-repos: --key <KEYID> is required" >&2; exit 2; }
 
-# Default to whatever the package builders just produced.
-[[ -n "$DEB_FILE" ]] || DEB_FILE="$(find "${ROOT}/build/packages" -name '*.deb' -print -quit 2>/dev/null || true)"
-[[ -n "$RPM_FILE" ]] || RPM_FILE="$(find "${ROOT}/build/packages" -name '*.rpm' -print -quit 2>/dev/null || true)"
+# Default to the packages for the version common.sh defines — not "whatever .deb
+# turns up first", which after a version bump can be the previous build.
+[[ -n "$DEB_FILE" ]] || DEB_FILE="${ROOT}/build/packages/${PKG_NAME}_${VERSION}-${RELEASE}_all.deb"
+[[ -n "$RPM_FILE" ]] || RPM_FILE="${ROOT}/build/packages/${PKG_NAME}-${VERSION}-${RELEASE}.noarch.rpm"
 [[ -f "$DEB_FILE" ]] || { echo "build-repos: no .deb found (build it first)" >&2; exit 1; }
 [[ -f "$RPM_FILE" ]] || { echo "build-repos: no .rpm found (build it first)" >&2; exit 1; }
 

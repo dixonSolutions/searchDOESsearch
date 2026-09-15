@@ -35,6 +35,7 @@ rpmbuild \
     exit 1
   }
 
+find "$OUT_DIR" -maxdepth 1 -name "${PKG_NAME}-*.rpm" -delete
 RPM="$(find "${TOPDIR}/RPMS" -name '*.rpm' -print -quit)"
 [[ -n "$RPM" ]] || { echo "build-rpm: rpmbuild produced no package" >&2; exit 1; }
 

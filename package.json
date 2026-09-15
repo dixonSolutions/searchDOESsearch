@@ -1,6 +1,6 @@
 {
   "name": "search-does-search",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "GNOME Shell extension that shows web search results and opens them in your default browser.",
   "private": true,
   "type": "module",
