@@ -449,6 +449,7 @@ class PageView extends St.BoxLayout {
   private _spinner: Spinner;
   private _spinnerTimer = 0;
   private _loadTimer = 0;
+  private _offlineBar!: St.BoxLayout;
   private _messageTimer = 0;
   private _message = '';
   private _open: St.Button;
@@ -554,6 +555,21 @@ class PageView extends St.BoxLayout {
     this._notice.add_child(this._noticeButtons);
     this.add_child(this._notice);
 
+    // --- offline ---
+    // Not a notice: there is nothing to decide and nothing to retry by hand, so
+    // it is one bar that states the fact and gets out of the way. It disappears
+    // on its own when the network comes back, because the client re-runs the
+    // search on network-changed.
+    this._offlineBar = new St.BoxLayout({style_class: 'sds-offline-bar', x_expand: true, visible: false});
+    this._offlineBar.add_child(new St.Label({
+      style_class: 'sds-offline-text',
+      text: 'Unable To Query (internet broken or not connected)',
+      x_expand: true,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+    }));
+    this.add_child(this._offlineBar);
+
     this._listener = {
       onFrame: frame => this._frame.showFrame(frame),
       onState: (state, detail, query) => this._onState(state, detail, query),
@@ -582,7 +598,7 @@ class PageView extends St.BoxLayout {
     if (query === this._query) return;
     this._query = query;
     this.metaInfo.name = query;
-    if (this._nav.depth === 0 && !this._notice.visible) {
+    if (this._nav.depth === 0 && !this._notice.visible && !this._offlineBar.visible) {
       this._showPage(query !== '' && query === this._pageQuery);
     }
     this._updateStatus();
@@ -607,6 +623,13 @@ class PageView extends St.BoxLayout {
 
   /** Show either the page or the skeleton — never a page from another query. */
   private _showPage(ready: boolean): void {
+    // The offline bar is the whole answer; a skeleton beside it would claim a
+    // page is on its way when nothing has been asked for.
+    if (this._offlineBar.visible && !ready) {
+      this._frame.visible = false;
+      this._skeleton.stop();
+      return;
+    }
     if (ready) {
       this._skeleton.stop();
       this._frame.visible = true;
@@ -695,6 +718,11 @@ class PageView extends St.BoxLayout {
     this._state = state;
     this._updateStatus();
     const engine = engineFor(this._engineId);
+    if (state === 'offline') {
+      this._showOffline();
+      return;
+    }
+    this._offlineBar.visible = false;
     if (state === 'blocked') {
       this._showNotice(`${engine.label} is refusing this network`,
         `${engine.label} answered with its "unusual traffic" check instead of results. That is decided by ` +
@@ -747,7 +775,7 @@ class PageView extends St.BoxLayout {
       this._title.opacity = 255;
     } else {
       const engine = engineFor(this._engineId);
-      const suffix = {loading: '', ready: '', blocked: ' · blocked', error: ' · failed'}[this._state] ?? '';
+      const suffix = {loading: '', ready: '', blocked: ' · blocked', error: ' · failed', offline: ' · offline'}[this._state] ?? '';
       this._title.clutter_text.set_markup(esc(`${engine.label}${suffix}`));
       this._title.opacity = DIM;
     }
@@ -804,7 +832,16 @@ class PageView extends St.BoxLayout {
     });
   }
 
+  /** No page, no skeleton, no buttons: one row saying why there is nothing. */
+  private _showOffline(): void {
+    this._notice.visible = false;
+    this._frame.visible = false;
+    this._skeleton.stop();
+    this._offlineBar.visible = true;
+  }
+
   private _showNotice(title: string, body: string, buttons: Array<[string, () => void]>): void {
+    this._offlineBar.visible = false;
     this._noticeTitle.text = title;
     this._noticeBody.text = body;
     this._noticeButtons.remove_all_children();

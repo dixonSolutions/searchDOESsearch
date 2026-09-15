@@ -70,6 +70,11 @@ glib-compile-schemas %{_datadir}/glib-2.0/schemas &>/dev/null || :
 %{_datadir}/glib-2.0/schemas/org.gnome.shell.extensions.search-does-search.gschema.xml
 
 %changelog
+* Tue Sep 15 2026 dixonSolutions <radr60662@gmail.com> - 1.0.2-1
+- Say so when there is no network, instead of rendering a failed page.
+- Stop exporting frames while the overview is closed, and pace exports by what
+  they actually cost.
+
 * Tue Sep 15 2026 dixonSolutions <radr60662@gmail.com> - 1.0.1-1
 - Fix the settings window: the prefs resource path was one the Shell never shipped.
 
