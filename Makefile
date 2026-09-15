@@ -10,6 +10,7 @@
 #   make nested-headless - Same, but with no window (virtual monitor)
 #   make schemas      - Compile GSettings schemas
 #   make check        - Run every test
+#   make check-resources - Every resource:/// import resolves to a real file
 #   make check-freeze - Regression test: cancel-per-keystroke must never block
 #   make check-provider - Regression test: when a page load is (and is not) issued
 #   make pack         - Package extension into .zip for extensions.gnome.org
@@ -26,7 +27,7 @@ EXT_DIR    := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA_DIR := $(DIST)/schemas
 
 .PHONY: build install enable disable restart nested nested-headless schemas \
-        check check-freeze check-provider pack deb rpm repos verify-repos clean logs
+        check check-freeze check-provider check-resources pack deb rpm repos verify-repos clean logs
 
 # St and Meta ship outside the default typelib search path.
 SHELL_TYPELIBS := /usr/lib/gnome-shell:$(firstword $(wildcard /usr/lib/*/mutter-*))
@@ -74,7 +75,7 @@ nested:
 nested-headless:
 	./scripts/nested-test.sh --headless $(NESTED_ARGS)
 
-check: check-freeze check-provider
+check: check-freeze check-provider check-resources
 
 # Replays the keystroke sequence that used to deadlock the compositor:
 # every keystroke cancels the in-flight search while it is still awaiting.
@@ -90,6 +91,14 @@ check-freeze: build
 	   echo "✗ Freeze regression test failed"; exit 1; \
 	 fi; \
 	 echo "✓ No freeze regression"
+
+# A wrong resource:/// path is invisible to tsc and to `make pack`: it only
+# surfaces in the process that imports it, which is how a broken prefs import
+# shipped. The Shell-side paths are covered by nested-test.sh instead.
+check-resources:
+	@echo "→ Checking resource:/// imports..."
+	@gjs -m scripts/check-resource-imports.js
+	@echo "✓ Resource imports resolve"
 
 # The provider decides when to load a page; getting it wrong either reloads on
 # every keystroke or strands the user on a followed page.

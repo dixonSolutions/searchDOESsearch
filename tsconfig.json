@@ -27,7 +27,12 @@
       "resource:///org/gnome/shell/extensions/extension.js": [
         "./node_modules/@girs/gnome-shell/src/extensions/extension.d.ts"
       ],
-      "resource:///org/gnome/shell/extensions/prefs.js": [
+      // Capitalised and nested under js/ — this is the path the Shell actually
+      // ships, and the key must match the import exactly or a wrong path
+      // type-checks cleanly and then fails at runtime, which is how a broken
+      // prefs import once shipped. scripts/check-resource-imports.js verifies
+      // the path against the installed gresource bundle.
+      "resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js": [
         "./node_modules/@girs/gnome-shell/src/extensions/prefs.d.ts"
       ],
       "resource:///org/gnome/shell/ui/animation.js": [
