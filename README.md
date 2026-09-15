@@ -40,10 +40,23 @@ No account, no API key, and no service of your own to run.
 
 ## Installation
 
-### Debian / Ubuntu
+Five ways in. They differ in who owns the upgrade, which is the part worth
+choosing on:
 
-A signed APT repository, so upgrades arrive with the rest of your system
-updates:
+| Method | Scope | Upgrades | Root |
+|---|---|---|---|
+| **APT repository** | system | `apt upgrade`, with everything else | yes |
+| **DNF repository** | system | `dnf upgrade`, with everything else | yes |
+| A single `.deb` / `.rpm` | system | nothing — you re-download | yes |
+| The extension `.zip` | your user | nothing — you re-download | no |
+| From source | your user | `git pull && make install` | no |
+
+The repositories are the ones to prefer, and not only for the upgrades: they are
+the only methods that *declare* the WebKit2 4.1 typelib the renderer needs, so
+the extension either installs working or refuses to install. Every other method
+will install happily on a machine that cannot render a page.
+
+### Debian, Ubuntu, and derivatives
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
@@ -54,7 +67,19 @@ echo "deb [signed-by=/etc/apt/keyrings/searchdoessearch.asc] https://dixonsoluti
 sudo apt update && sudo apt install gnome-shell-extension-search-does-search
 ```
 
-### Fedora / RHEL / openSUSE
+On apt 2.4 and newer you can use the deb822 form instead, which keeps the key
+reference and the source in one file:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL -o /etc/apt/keyrings/searchdoessearch.asc \
+  https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg
+sudo curl -fsSL -o /etc/apt/sources.list.d/searchdoessearch.sources \
+  https://dixonsolutions.github.io/searchDOESsearch/searchdoessearch.sources
+sudo apt update && sudo apt install gnome-shell-extension-search-does-search
+```
+
+### Fedora, RHEL, and openSUSE
 
 ```bash
 sudo curl -fsSL -o /etc/yum.repos.d/searchdoessearch.repo \
@@ -62,19 +87,46 @@ sudo curl -fsSL -o /etc/yum.repos.d/searchdoessearch.repo \
 sudo dnf install gnome-shell-extension-search-does-search
 ```
 
-Both repositories are signed by the key published at
-[KEY.gpg](https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg), which is
-also committed in this repository as `packaging/KEY.gpg`, so the two can be
-compared. A packaged extension installs system-wide and is **not** enabled for
-you: log out and back in so the session picks it up, then
+The drop-in sets `gpgcheck=1` and `repo_gpgcheck=1`, so both the package and the
+repository metadata are checked against the published key. On openSUSE use
+`zypper` with the same URL.
 
-```bash
-gnome-extensions enable search-does-search@searchdoessearch.github.io
+### Checking the signing key
+
+Both repositories are signed by one key, published at
+[KEY.gpg](https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg) and
+committed in this repository as `packaging/KEY.gpg` so the two can be compared.
+It should be:
+
+```
+C65F ABB8 9CAA 060C D24E  4D09 22A5 EC75 CE3A 14C0
 ```
 
-### From a release zip
+```bash
+curl -fsSL https://dixonsolutions.github.io/searchDOESsearch/KEY.gpg \
+  | gpg --show-keys --fingerprint
+```
 
-A per-user install, no root and no repository — but nothing updates it for you:
+If that ever disagrees with what is in this repository, do not install — the
+build fails on that mismatch precisely so it cannot happen quietly.
+
+### A single `.deb` or `.rpm`, no repository
+
+Each `v*` tag publishes the packages to
+[GitHub Releases](https://github.com/dixonSolutions/searchDOESsearch/releases)
+alongside the zip. This gets you the same system-wide install and the same
+declared dependencies, but nothing will ever update it:
+
+```bash
+sudo apt install ./gnome-shell-extension-search-does-search_*_all.deb
+# or
+sudo dnf install ./gnome-shell-extension-search-does-search-*.noarch.rpm
+```
+
+### The extension zip, for your user only
+
+No root, no repository, and nothing to uninstall system-wide — but you are on
+your own for the WebKit dependency and for updates:
 
 ```bash
 curl -fsSLO https://github.com/dixonSolutions/searchDOESsearch/releases/latest/download/search-does-search@searchdoessearch.github.io.shell-extension.zip
@@ -82,7 +134,11 @@ gnome-extensions install --force search-does-search@searchdoessearch.github.io.s
 gnome-extensions enable search-does-search@searchdoessearch.github.io
 ```
 
-Every release also carries the `.deb` and the `.rpm` as direct downloads.
+### extensions.gnome.org
+
+Not published there yet. When it is, that page will be the only channel where
+GNOME itself checks for updates and applies them at your next login — see
+[docs/PUBLISHING.md](docs/PUBLISHING.md) for where that submission stands.
 
 ### From source
 
@@ -93,11 +149,45 @@ cd searchDOESsearch
 npm install
 make install
 make enable
-
-# Restart GNOME Shell:
-# X11:    Alt + F2 → type 'r' → Enter
-# Wayland: Log out and back in
 ```
+
+`make nested` builds it and runs it in a throwaway nested GNOME session, so you
+can test a change without logging out of your own.
+
+### After installing
+
+A **packaged** extension is installed system-wide and deliberately not enabled
+for you. A new system extension is only picked up by a fresh session, so log out
+and back in (Wayland) or press Alt+F2 and type `r` (X11), then:
+
+```bash
+gnome-extensions enable search-does-search@searchdoessearch.github.io
+```
+
+If the section reports that the renderer is missing, the WebKit typelib is not
+installed — `gir1.2-webkit2-4.1` on Debian and Ubuntu, `webkit2gtk4.1` on
+Fedora. The repository packages depend on it; the zip and source installs
+cannot.
+
+### Uninstalling
+
+```bash
+# APT
+sudo apt remove gnome-shell-extension-search-does-search
+sudo rm /etc/apt/sources.list.d/searchdoessearch.{list,sources} /etc/apt/keyrings/searchdoessearch.asc
+
+# DNF
+sudo dnf remove gnome-shell-extension-search-does-search
+sudo rm /etc/yum.repos.d/searchdoessearch.repo
+
+# zip or source install
+gnome-extensions uninstall search-does-search@searchdoessearch.github.io
+```
+
+A system-wide install can be disabled per user but not removed per user — that
+is the trade for letting the package manager own the upgrade. `gnome-extensions
+disable search-does-search@searchdoessearch.github.io` turns it off for you and
+leaves it installed for everyone else.
 
 ---
 
