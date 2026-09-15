@@ -70,5 +70,8 @@ glib-compile-schemas %{_datadir}/glib-2.0/schemas &>/dev/null || :
 %{_datadir}/glib-2.0/schemas/org.gnome.shell.extensions.search-does-search.gschema.xml
 
 %changelog
+* Tue Sep 15 2026 dixonSolutions <radr60662@gmail.com> - 1.0.1-1
+- Fix the settings window: the prefs resource path was one the Shell never shipped.
+
 * Tue Sep 15 2026 dixonSolutions <radr60662@gmail.com> - 1.0.0-1
 - First packaged release.
