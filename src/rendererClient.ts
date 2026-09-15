@@ -17,7 +17,7 @@ export const RENDERER_OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 
 /** A frame the renderer has written: raw RGBA, `stride` bytes per row. */
 export interface Frame { path: string; width: number; height: number; stride: number; serial: number; }
-export type RendererState = 'loading' | 'ready' | 'blocked' | 'error';
+export type RendererState = 'loading' | 'ready' | 'blocked' | 'error' | 'offline';
 /** What a clicked link does: follow it in this view, or hand it to the browser. */
 export type LinkMode = 'contained' | 'browser';
 /** Where the user is: depth 0 is the results page itself. */
@@ -51,11 +51,22 @@ export class RendererClient {
   private _lastSearch: [string, string] | null = null;
   private _lastConfigure: [number, number, number] | null = null;
   private _linkMode: LinkMode = 'contained';
+  private _active = true;
+  private _monitorId = 0;
   private _destroyed = false;
 
   /** @param script absolute path of panel/sds-renderer.js */
   constructor(script: string) {
     this._script = script;
+    // A query issued with no network produces a WebKit error page after a DNS
+    // timeout — several seconds of spinner to say something knowable up front.
+    // Watching the monitor also means the answer arrives when the network does.
+    const monitor = Gio.NetworkMonitor.get_default();
+    this._monitorId = monitor.connect('network-changed', (_m, available: boolean) => {
+      if (!available || !this._lastSearch) return;
+      const [query, engine] = this._lastSearch;
+      this.search(query, engine);
+    });
     this._watchId = Gio.bus_watch_name(Gio.BusType.SESSION, RENDERER_BUS_NAME, Gio.BusNameWatcherFlags.NONE,
       () => this._onNameAppeared(),
       () => this._onNameVanished());
@@ -63,18 +74,48 @@ export class RendererClient {
 
   get isRunning(): boolean { return this._proxy !== null; }
 
+  /**
+   * Whether there is any point asking for a page. Checked in both places a load
+   * can start: search(), and the replay in _onNameAppeared — a renderer that
+   * joins the bus after a prewarm re-issues the last search, which would
+   * otherwise walk straight past the check search() just made.
+   */
+  private _online(): boolean {
+    return Gio.NetworkMonitor.get_default().get_network_available();
+  }
+
   addListener(listener: RendererListener): void { this._listeners.add(listener); }
   removeListener(listener: RendererListener): void { this._listeners.delete(listener); }
 
   /** Load the engine's results page for `query`; starts the renderer if needed. */
   search(query: string, engine: string): void {
     this._lastSearch = [query, engine];
+    if (!this._online()) {
+      // Do not start a renderer, and do not ask it to load anything: there is
+      // nothing to query. The view says so, and the network-changed handler
+      // above retries this same search the moment there is a network again.
+      this._emitState('offline', 'no network', query);
+      return;
+    }
     this._ensureRunning();
     this._call('Search', new GLib.Variant('(ss)', [query, engine]));
   }
 
+  /**
+   * Whether the overview is showing the page. False stops the renderer
+   * exporting frames; the page stays loaded, so reopening is still warm.
+   */
+  setActive(active: boolean): void {
+    if (active === this._active) return;
+    this._active = active;
+    this._call('SetActive', new GLib.Variant('(b)', [active]));
+  }
+
   /** Start the renderer process before it is needed, so the first search is not also a cold start. */
   prewarm(): void {
+    // With no network there is nothing to warm up for, and a renderer started
+    // anyway announces its own loading state over the top of the offline bar.
+    if (!this._online()) return;
     this._ensureRunning();
   }
 
@@ -128,6 +169,10 @@ export class RendererClient {
 
   destroy(): void {
     this._destroyed = true;
+    if (this._monitorId) {
+      Gio.NetworkMonitor.get_default().disconnect(this._monitorId);
+      this._monitorId = 0;
+    }
     this._cancellable.cancel();
     if (this._proxy) {
       this._call('Quit', null, true);
@@ -204,8 +249,12 @@ export class RendererClient {
         this._signalId = proxy.connect('g-signal', (_p, _sender, name, params) => this._onSignal(name, params));
         // The renderer may have (re)started after these were requested.
         this._call('SetLinkMode', new GLib.Variant('(s)', [this._linkMode]));
+        if (!this._active) this._call('SetActive', new GLib.Variant('(b)', [false]));
         if (this._lastConfigure) this._call('Configure', new GLib.Variant('(iid)', this._lastConfigure));
-        if (this._lastSearch) this._call('Search', new GLib.Variant('(ss)', this._lastSearch));
+        if (this._lastSearch && this._online())
+          this._call('Search', new GLib.Variant('(ss)', this._lastSearch));
+        else if (this._lastSearch)
+          this._emitState('offline', 'no network', this._lastSearch[0]);
       });
   }
 

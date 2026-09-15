@@ -14,6 +14,7 @@ export default class SearchDoesSearchExtension extends Extension {
   private _settings: Gio.Settings | null = null;
   private _settingsChangedId = 0;
   private _overviewShowingId = 0;
+  private _overviewHiddenId = 0;
 
   private _readOptions(): Partial<SearchProviderOptions> {
     return {engine: this._settings?.get_string('engine') ?? 'duckduckgo'};
@@ -46,7 +47,14 @@ export default class SearchDoesSearchExtension extends Extension {
     });
     // Starting WebKit costs about 0.4s. Paying it while the overview animates
     // open means the first keystroke meets a warm renderer.
-    this._overviewShowingId = Main.overview.connect('showing', () => this._renderer?.prewarm());
+    this._overviewShowingId = Main.overview.connect('showing', () => {
+      this._renderer?.prewarm();
+      this._renderer?.setActive(true);
+    });
+    // A closed overview still had a live page exporting every repaint into it —
+    // an animating ad kept a full-window readback running for an audience of
+    // nobody. The page stays loaded; only the exporting stops.
+    this._overviewHiddenId = Main.overview.connect('hidden', () => this._renderer?.setActive(false));
     Main.overview.searchController.addProvider(provider);
   }
 
@@ -54,6 +62,10 @@ export default class SearchDoesSearchExtension extends Extension {
     if (this._overviewShowingId) {
       Main.overview.disconnect(this._overviewShowingId);
       this._overviewShowingId = 0;
+    }
+    if (this._overviewHiddenId) {
+      Main.overview.disconnect(this._overviewHiddenId);
+      this._overviewHiddenId = 0;
     }
     if (this._settings && this._settingsChangedId) {
       this._settings.disconnect(this._settingsChangedId);

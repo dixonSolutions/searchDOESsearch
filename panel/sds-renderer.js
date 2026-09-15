@@ -86,6 +86,16 @@ const DEFAULT_HEIGHT = 600;
 // reading pixels, and never export more often than this.
 const FRAME_COALESCE_MS = 6;
 const FRAME_MIN_INTERVAL_MS = 16;
+// An export is a full-window readback plus a write of the same pixels — 15-25ms
+// on a 1280x800 page, measured. A 16ms floor therefore asks for more exports per
+// second than one can finish, and on a page that animates continuously (an ad,
+// a carousel, a spinner) the loop never returns to idle: D-Bus calls queue
+// behind the backlog and the Shell reports the renderer as not answering. The
+// floor is raised to whatever the last exports actually cost, so exporting can
+// never take more than this share of the loop.
+const FRAME_BUDGET = 0.5;
+// Cost is smoothed over recent exports; one slow frame should not pin the rate.
+const COST_SMOOTHING = 0.3;
 // One more export this long after the last repaint, to catch a region WebKit
 // finished painting after it announced the damage.
 const FRAME_SETTLE_MS = 150;
@@ -133,6 +143,9 @@ export const INTERFACE_XML = `
     <method name="OpenCurrent"/>
     <method name="SetLinkMode">
       <arg type="s" name="mode" direction="in"/>
+    </method>
+    <method name="SetActive">
+      <arg type="b" name="active" direction="in"/>
     </method>
     <method name="Reload"/>
     <method name="Refresh"/>
@@ -451,6 +464,10 @@ class Renderer {
     this._height = DEFAULT_HEIGHT;
     this._scale = 1;
     this._serial = 0;
+    // Whether the overview is showing the page; see SetActive.
+    this._active = true;
+    // Smoothed cost of one export, in ms; paces _scheduleFrame.
+    this._exportCost = 0;
     this._frameTimer = 0;
     this._settleTimer = 0;
     this._lastFrameAt = 0;
@@ -508,11 +525,19 @@ class Renderer {
         this._depth += 1;
         this._emitNav();
       }
+      // A load that failed because the machine has no working network is not a
+      // fault of the engine or the site, and saying so sends people to check the
+      // wrong thing. Ask the network monitor rather than pattern-matching the
+      // error text, which is localised and version-specific.
+      this._pendingDepth = 0;
+      if (!Gio.NetworkMonitor.get_default().get_network_available()) {
+        this._setState('offline', 'no network');
+        return true;
+      }
       // Name what actually failed: the engine at the results page, the site the
       // user followed once they are deeper than that.
       const what = this._depth > 0 || this._pendingDepth > 0
         ? (hostOf(this._web.get_uri() ?? '') || 'The page') : this._engine.label;
-      this._pendingDepth = 0;
       this._setState('error', `${what} could not be loaded: ${err.message}`);
       return true;
     });
@@ -810,7 +835,8 @@ class Renderer {
   _scheduleFrame() {
     this._scheduleSettleFrame();
     if (this._frameTimer) return;
-    const wait = Math.max(FRAME_COALESCE_MS, FRAME_MIN_INTERVAL_MS - (now() - this._lastFrameAt));
+    const floor = Math.max(FRAME_MIN_INTERVAL_MS, (this._exportCost || 0) / FRAME_BUDGET);
+    const wait = Math.max(FRAME_COALESCE_MS, floor - (now() - this._lastFrameAt));
     this._frameTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.ceil(wait), () => {
       this._frameTimer = 0;
       this._exportFrame();
@@ -819,6 +845,10 @@ class Renderer {
   }
 
   _exportFrame() {
+    // Nothing is looking at these pixels: the overview is closed. The page keeps
+    // living — a search a moment later should still be warm — but reading it
+    // back and writing 2MB per repaint for an audience of nobody is pure cost.
+    if (!this._active) return;
     const gdkWindow = this.window.get_window();
     if (!gdkWindow) return;
     const t0 = now();
@@ -829,6 +859,9 @@ class Renderer {
     const path = this._frames.write(bytes.get_data());
     const t2 = now();
     this._lastFrameAt = t2;
+    this._exportCost = this._exportCost > 0
+        ? this._exportCost + COST_SMOOTHING * ((t2 - t0) - this._exportCost)
+        : (t2 - t0);
     this._serial = (this._serial + 1) >>> 0;
     this.emitSignal('Frame', new GLib.Variant('(suuuu)',
       [path, pixbuf.get_width(), pixbuf.get_height(), pixbuf.get_rowstride(), this._serial]));
@@ -1056,6 +1089,26 @@ class Renderer {
     // Re-emit the current state so a newly created view can pick it up.
     if (this._state) this._setState(this._state, this._stateDetail ?? this._engine.label);
     this._emitNav();
+    this._scheduleFrame();
+  }
+
+  /**
+   * Whether anyone is looking. The Shell calls this with false when the overview
+   * closes and true when it opens: the page is kept loaded either way, so a
+   * search straight after is still warm, but a closed overview costs nothing.
+   */
+  SetActive(active) {
+    active = !!active;
+    if (active === this._active) return;
+    this._active = active;
+    if (!active) {
+      if (this._frameTimer) GLib.source_remove(this._frameTimer);
+      if (this._settleTimer) GLib.source_remove(this._settleTimer);
+      this._frameTimer = this._settleTimer = 0;
+      return;
+    }
+    // Whatever the page did while nobody was watching, the Shell's last frame is
+    // now stale — hand it a current one.
     this._scheduleFrame();
   }
 

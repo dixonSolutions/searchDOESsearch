@@ -114,3 +114,17 @@
   spacing: 12px;
   padding-top: 8px;
 }
+
+/* Offline: a single bar, not a page-sized notice. Nothing here is actionable —
+   it states why there is nothing to show and takes only the height it needs, so
+   the rest of the search results stay where they were. It clears itself when the
+   network returns. */
+.sds-offline-bar {
+  padding: 14px 16px;
+  border-radius: 8px;
+  background-color: rgba(0, 0, 0, 0.18);
+}
+.sds-offline-text {
+  font-weight: bold;
+  opacity: 0.85;
+}
