@@ -7,11 +7,13 @@ name: Package repositories
 #   SDS_GPG_PRIVATE_KEY  armoured private key that signs Release/repomd/the rpm
 #   SDS_GPG_KEY_ID       its long key id
 #
-# A `paths` filter would apply to tag pushes too, where there is no diff to match
-# against, so a tagged release would silently never publish. Tags and manual
-# dispatch only.
+# Every commit to main republishes, so the site never lags the code; tags and
+# manual dispatch publish too. No `paths` filter: it would apply to tag pushes as
+# well, where there is no diff to match against, and a tagged release would then
+# silently never publish.
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -25,6 +27,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.key.outputs.have_key }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,13 +55,22 @@ jobs:
           ./packaging/build-rpm.sh
           ls -l build/packages
 
+      # An ordinary commit to main that cannot be signed should not paint the
+      # commit red: it still proves the packages build. A tag or a manual
+      # dispatch is someone asking to publish, and that has to fail loudly.
       - name: Import the signing key
+        id: key
         env:
           SDS_GPG_PRIVATE_KEY: ${{ secrets.SDS_GPG_PRIVATE_KEY }}
           SDS_GPG_KEY_ID: ${{ secrets.SDS_GPG_KEY_ID }}
         run: |
           if [ -z "$SDS_GPG_PRIVATE_KEY" ]; then
-            echo "::error::SDS_GPG_PRIVATE_KEY is not set. Run scripts/bootstrap-signing-key.sh locally to create the key and upload both secrets."
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+              echo "::notice::No signing key configured — packages built, repositories not published. See docs/PUBLISHING.md § The signing key."
+              exit 0
+            fi
+            echo "::error::SDS_GPG_PRIVATE_KEY is not set, so nothing can be signed. See docs/PUBLISHING.md § The signing key."
             exit 1
           fi
           export GNUPGHOME="${RUNNER_TEMP}/gnupg"
@@ -70,11 +83,14 @@ jobs:
           fi
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           echo "SDS_KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          echo "have_key=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the signed repositories
+        if: steps.key.outputs.have_key == 'true'
         run: ./packaging/build-repos.sh --key "$SDS_KEY_ID" --out build/pages
 
       - name: Check the published key matches the one in the tree
+        if: steps.key.outputs.have_key == 'true'
         run: |
           # A mismatch means the secret was rotated without committing the new
           # public half — users would fetch a key that cannot verify anything.
@@ -87,14 +103,17 @@ jobs:
           echo "public key in the tree matches the signing key"
 
       - name: Verify the repositories as a client would
+        if: steps.key.outputs.have_key == 'true'
         run: ./packaging/verify-repos.sh --site build/pages
 
       - uses: actions/upload-pages-artifact@v3
+        if: steps.key.outputs.have_key == 'true'
         with:
           path: build/pages
 
   deploy:
     needs: build
+    if: needs.build.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write
