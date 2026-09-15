@@ -17,10 +17,13 @@ HOMEPAGE="https://github.com/dixonSolutions/searchDOESsearch"
 PAGES_URL="https://dixonsolutions.github.io/searchDOESsearch"
 
 SUMMARY="Web results directly in system search"
-DESCRIPTION="Type in the GNOME overview and the engine's own results page renders
-right there in the search list — scroll it, click it, follow links in place.
-Nothing is handed to a browser until you ask for it, and which browser that is
-stays your system default."
+DESCRIPTION="A glance at a results page, not a browser. Type in the GNOME overview
+and the engine's own results page renders right there in the search list: read it,
+scroll it, click into a result without ever leaving the overview. It is for the
+search you would rather not open a browser for.
+.
+There is no address bar, no tabs, no forward button and no history. When you want
+the actual web, press Enter and your default browser takes over."
 
 # Where a system-scope extension lives. Unlike a user install, it ships no
 # schemas/ subfolder: gnome-shell reads the compiled schema from its own prefix

@@ -3,9 +3,21 @@
 **Web results directly in system search.**
 
 Press Super, type, and the engine's own results page renders right there in the
-GNOME overview — scroll it, click it, follow the links you click without ever
-leaving it. Nothing is handed to a browser until you ask for it, and which
-browser that is stays your system default.
+GNOME overview — read it, scroll it, click into a result. It is built for the
+search you would rather not open a browser for: check a fact, read the first
+paragraph, settle the argument, carry on with what you were doing.
+
+> ### This is not a browser, and is not trying to become one
+>
+> No address bar. No tabs. No forward button, no history, no bookmarks, no
+> downloads. It is **a glance at a results page, in the place you were already
+> typing** — that convenience is the whole point of it.
+>
+> The moment you want the actual web, press Enter and your real browser takes
+> over: the one you already use, with your logins, your extensions and your
+> ad blocker. Anything this view cannot show — a download, a PDF — goes there
+> too, and a link that is not a web page at all (`mailto:`, an app scheme) is
+> refused outright and says so.
 
 ![Typing a query in the GNOME overview and getting a live, scrollable results page in the search list](docs/media/demo.gif)
 
@@ -13,9 +25,10 @@ browser that is stays your system default.
 
 ## Features
 
-- Intercepts queries in the GNOME Activities search bar
+- Answers a query **without a browser window ever opening** — the overview you
+  already pressed Super for is the whole interface
 - Shows the engine's **rendered results page inside the overview** — scroll it, click it, use the keyboard in it
-- **Follows the links you click, in place**, with a back control counting how many pages deep you are — or hands them to your browser, whichever you set
+- **Follows the links you click, in place**, with a back control counting how many pages deep you are — or hands them to your browser, whichever you set. A back control is the only navigation there is: this is a glance, not a session
 - Opens in your **default browser** when you ask it to (Firefox, Chrome, Brave, Chromium — anything)
 - Decides for itself **when to appear**: every search, or only when nothing else matched
 - Queries never touch a third party you did not choose
