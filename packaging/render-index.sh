@@ -40,7 +40,8 @@ cat > "${OUT_DIR}/index.html" <<HTML
 </style>
 <main>
   <h1>Search Does Search</h1>
-  <p class="tagline">${SUMMARY} — signed package repositories for APT and DNF.</p>
+  <p class="tagline">${SUMMARY} — a glance at a results page without opening a
+  browser. Signed package repositories for APT and DNF.</p>
 
   <h2>Debian / Ubuntu</h2>
 <pre><code>sudo install -d -m 0755 /etc/apt/keyrings
