@@ -55,7 +55,7 @@
   text-align: center;
 }
 
-/* "Open this page in your browser" — Shell's round icon button, only shown at depth ≥ 1. */
+/* Always available, including while loading or awaiting verification. */
 .sds-open {
   padding: 6px;
 }

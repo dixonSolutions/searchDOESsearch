@@ -27,7 +27,7 @@ EXT_DIR    := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA_DIR := $(DIST)/schemas
 
 .PHONY: build install enable disable restart nested nested-headless schemas \
-        check check-freeze check-provider check-resources pack deb rpm repos verify-repos clean logs
+        check check-freeze check-provider check-client check-pacing check-resources pack deb rpm repos verify-repos clean logs
 
 # St and Meta ship outside the default typelib search path.
 SHELL_TYPELIBS := /usr/lib/gnome-shell:$(firstword $(wildcard /usr/lib/*/mutter-*))
@@ -75,7 +75,7 @@ nested:
 nested-headless:
 	./scripts/nested-test.sh --headless $(NESTED_ARGS)
 
-check: check-freeze check-provider check-resources
+check: check-freeze check-provider check-client check-pacing check-resources
 
 # Replays the keystroke sequence that used to deadlock the compositor:
 # every keystroke cancels the in-flight search while it is still awaiting.
@@ -110,10 +110,20 @@ check-provider: build
 	 { echo "✗ Provider load decisions are wrong"; exit 1; }
 	@echo "✓ Provider load decisions OK"
 
+check-client: build
+	@echo "→ Checking stale renderer signals..."
+	@timeout $(FREEZE_TIMEOUT) gjs -m scripts/client-check.js
+
+check-pacing: build
+	@GI_TYPELIB_PATH="$(SHELL_TYPELIBS):$$GI_TYPELIB_PATH" \
+	 LD_LIBRARY_PATH="$(SHELL_TYPELIBS):$$LD_LIBRARY_PATH" \
+	 timeout $(FREEZE_TIMEOUT) gjs -m scripts/pacing-check.js
+
 pack: build
 	@echo "→ Packaging extension..."
 	gnome-extensions pack $(DIST) \
 		--schema=schemas/org.gnome.shell.extensions.search-does-search.gschema.xml \
+		--extra-source=engines.js \
 		--extra-source=browserLauncher.js \
 		--extra-source=pageView.js \
 		--extra-source=rendererClient.js \

@@ -22,19 +22,21 @@ import System from 'system';
 
 import {SearchProvider} from '../dist/search-does-search@searchdoessearch.github.io/searchProvider.js';
 
-/** Longer than the provider's 200ms debounce and its 400ms floor put together. */
-const SETTLE_MS = 700;
+/** Beyond the load interval, with scheduling headroom on a busy desktop. */
+const SETTLE_MS = 1000;
 
 const loop = GLib.MainLoop.new(null, false);
 const failures = [];
 const searches = [];
+const orderedEvents = [];
+let cancelled;
 
-const renderer = {search: (query, engine) => searches.push(`${query}/${engine}`)};
+const renderer = {search: (query, engine) => { searches.push(`${query}/${engine}`); orderedEvents.push('search'); }};
 /** The page view the Shell would build; `navigated` is what rule 3 turns on. */
 const view = {
   navigated: false,
   setQuery() {},
-  querySettled() {},
+  querySettled() { orderedEvents.push('settled'); },
   connect: () => 1,
 };
 
@@ -83,6 +85,39 @@ const steps = [
   () => {
     check('only the last of two quick queries loads', searches.length === 3);
     check('and it is the last one', searches[2] === 'two/duckduckgo');
+  },
+  () => {
+    check('view is prepared before renderer can answer synchronously', orderedEvents.slice(-2).join(',') === 'settled,search');
+    cancelled = new Gio.Cancellable();
+    provider.getInitialResultSet(['cancelled'], cancelled);
+    cancelled.cancel();
+  },
+  () => {
+    check('cancelled pending search does not reach the renderer', searches.length === 3);
+    type('cleared');
+    type('');
+  },
+  () => {
+    check('clearing terms cancels the pending load', searches.length === 3);
+    type('engine change');
+  },
+  () => {
+    provider.updateOptions({engine: 'bing'});
+  },
+  () => {
+    check('engine change reloads the current query once', searches.length === 5);
+    check('engine change uses the new engine', searches[4] === 'engine change/bing');
+    type('hidden');
+    provider.suspend();
+    provider.updateOptions({engine: 'brave'});
+  },
+  () => {
+    check('hidden overview cancels pending and settings-triggered loads', searches.length === 5);
+    type('destroyed');
+    provider.destroy();
+  },
+  () => {
+    check('destroy cancels the pending search', searches.length === 5);
   },
 ];
 

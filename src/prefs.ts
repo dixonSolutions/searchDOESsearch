@@ -11,12 +11,11 @@ import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import {ENGINES as ENGINE_CHOICES} from './engines.js';
+
 interface Choice { value: string; label: string; }
 
-const ENGINES: Choice[] = [
-  {value: 'duckduckgo', label: 'DuckDuckGo'},
-  {value: 'google', label: 'Google'},
-];
+const ENGINES: Choice[] = Object.entries(ENGINE_CHOICES).map(([value, engine]) => ({value, label: engine.label}));
 const LINK_MODES: Choice[] = [
   {value: 'contained', label: 'In the overview'},
   {value: 'browser', label: 'In my browser'},
@@ -55,28 +54,25 @@ export default class SearchDoesSearchPreferences extends ExtensionPreferences {
 
     // --- the page itself ---
     const display = new Adw.PreferencesGroup({
-      title: 'Results page',
-      description: 'The engine\'s results page is rendered and shown inside the overview as you type. ' +
-        'Scroll, click and type in it as usual.',
+      title: 'Web search',
+      description: 'Search from Activities. Results load after you pause typing.',
     });
     display.add(choiceRow(settings, 'engine', 'Engine',
-      'Google refuses many networks with a bot check; the page reports that rather than working around it', ENGINES));
+      'Queries go only to the engine you choose. Some engines may ask you to continue in your browser.', ENGINES));
     display.add(choiceRow(settings, 'link-mode', 'Open links',
-      'In the overview, a back button counts how many pages deep you are; middle-click still uses your browser. ' +
-      'Downloads and PDFs always go to your browser',
+      'Middle-click, downloads and PDFs always use your browser.',
       LINK_MODES));
     page.add(display);
 
     // --- where it shows up ---
     const placement = new Adw.PreferencesGroup({
       title: 'In the search results',
-      description: 'Your browser\'s own "search the web" entry answers every query, so it does not count ' +
-        'as something else having matched.',
+      description: 'Keep apps and files easy to reach.',
     });
     placement.add(choiceRow(settings, 'section-visibility', 'Show web results',
-      'When this section appears at all', VISIBILITY));
-    placement.add(choiceRow(settings, 'section-placement', 'Put them first',
-      'Moves the section, not the keyboard selection: Enter still goes to the section GNOME selected', PLACEMENT));
+      'Show alongside local results, or only when they are empty.', VISIBILITY));
+    placement.add(choiceRow(settings, 'section-placement', 'Position',
+      'Enter opens the result selected by GNOME.', PLACEMENT));
     page.add(placement);
 
     window.add(page);

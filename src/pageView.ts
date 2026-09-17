@@ -35,16 +35,8 @@ import {openInDefaultBrowser} from './browserLauncher.js';
 import {Spinner} from 'resource:///org/gnome/shell/ui/animation.js';
 import {Frame, LinkMode, Nav, RendererClient, RendererListener, RendererState} from './rendererClient.js';
 
-const enc = encodeURIComponent;
-
-export const ENGINES: Record<string, {label: string; browser: (q: string) => string}> = {
-  duckduckgo: {label: 'DuckDuckGo', browser: q => `https://duckduckgo.com/?q=${enc(q)}`},
-  google: {label: 'Google', browser: q => `https://www.google.com/search?q=${enc(q)}`},
-};
-export function engineFor(id: string): {id: string; label: string; browser: (q: string) => string} {
-  const engine = ENGINES[id] ? id : 'duckduckgo';
-  return {id: engine, ...ENGINES[engine]};
-}
+import {engineFor} from './engines.js';
+export {ENGINES, engineFor} from './engines.js';
 
 /** Result meta the provider registers for this view; the id never changes so the Shell reuses the actor. */
 export const PAGE_RESULT_ID = 'sds:page';
@@ -203,8 +195,10 @@ class FrameActor extends St.Widget {
   }
 
   /** Upload a frame; older frames arriving late are ignored. */
-  showFrame(frame: Frame): void {
-    if (frame.serial <= this._serial && this._serial - frame.serial < 1 << 30) return;
+  resetSerial(): void { this._serial = -1; }
+
+  showFrame(frame: Frame): boolean {
+    if (frame.serial <= this._serial && this._serial - frame.serial < 1 << 30) return false;
     this._serial = frame.serial;
     try {
       const t0 = GLib.get_monotonic_time();
@@ -214,9 +208,11 @@ class FrameActor extends St.Widget {
         console.log(`[SearchDoesSearch] frame #${frame.serial} ${frame.width}x${frame.height} ` +
           `map+upload ${((GLib.get_monotonic_time() - t0) / 1000).toFixed(1)}ms`);
       }
+      return true;
     } catch (error) {
       // The renderer replaced the file between signal and map; the next frame follows.
       console.debug(`[SearchDoesSearch] frame ${frame.serial} skipped: ${error}`);
+      return false;
     }
   }
 
@@ -440,7 +436,9 @@ class PageView extends St.BoxLayout {
   private _deps: PageViewDeps;
   private _query = '';
   private _state: RendererState = 'loading';
-  private _nav: Nav = {depth: 0, title: '', uri: ''};
+  private _nav: Nav = {depth: 0, title: '', uri: '', query: '', engine: '', generation: 0};
+  private _generation = -1;
+  private _frameGeneration = -1;
   private _listener: RendererListener;
   private _settingsId = 0;
   private _title: St.Label;
@@ -454,10 +452,7 @@ class PageView extends St.BoxLayout {
   private _message = '';
   private _open: St.Button;
   private _refresh: St.Button;
-  private _openShown = false;
   private _skeleton: InstanceType<typeof Skeleton>;
-  /** The query the page on screen belongs to; '' while nothing valid is shown. */
-  private _pageQuery = '';
   private _back: InstanceType<typeof BackButton>;
   private _frame: InstanceType<typeof FrameActor>;
   private _notice: St.BoxLayout;
@@ -501,8 +496,8 @@ class PageView extends St.BoxLayout {
     this._open = new St.Button({
       style_class: 'icon-button sds-open',
       can_focus: true,
-      visible: false,
-      accessible_name: 'Open this page in your browser',
+      visible: true,
+      accessible_name: 'Open in browser',
       child: new St.Icon({icon_name: 'web-browser-symbolic', icon_size: 16}),
     });
     this._open.connect('clicked', () => this._openCurrentInBrowser());
@@ -563,7 +558,7 @@ class PageView extends St.BoxLayout {
     this._offlineBar = new St.BoxLayout({style_class: 'sds-offline-bar', x_expand: true, visible: false});
     this._offlineBar.add_child(new St.Label({
       style_class: 'sds-offline-text',
-      text: 'Unable To Query (internet broken or not connected)',
+      text: 'You’re offline. Search will resume when you reconnect.',
       x_expand: true,
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
@@ -571,8 +566,8 @@ class PageView extends St.BoxLayout {
     this.add_child(this._offlineBar);
 
     this._listener = {
-      onFrame: frame => this._frame.showFrame(frame),
-      onState: (state, detail, query) => this._onState(state, detail, query),
+      onFrame: frame => this._onFrame(frame),
+      onState: (state, detail, query, engine, generation) => this._onState(state, detail, query, engine, generation),
       onLaunched: () => Main.overview.hide(),
       onNav: nav => this._onNav(nav),
       onRefused: scheme => this._flash(`${scheme}: links are only followed for web pages`),
@@ -590,17 +585,22 @@ class PageView extends St.BoxLayout {
   /**
    * Called by the provider whenever the overview's terms change — on every
    * keystroke, well before anything is loaded for them. The page on screen
-   * belongs to whichever query produced it: if that is still this one, it stays
-   * (deleting a character and retyping it shows the same results at once); if
-   * it is not, it goes, and the skeleton stands in until the new one arrives.
+   * belongs to whichever query produced it. Hide it immediately when the
+   * terms change, even if the user had followed a link or hit a load error.
    */
   setQuery(query: string): void {
     if (query === this._query) return;
     this._query = query;
     this.metaInfo.name = query;
-    if (this._nav.depth === 0 && !this._notice.visible && !this._offlineBar.visible) {
-      this._showPage(query !== '' && query === this._pageQuery);
-    }
+    // Even a followed page or an old error belongs to the previous query.
+    this._frameGeneration = -1;
+    this._generation = -1;
+    this._nav = {depth: 0, title: '', uri: '', query, engine: this._engineId, generation: this._generation};
+    this._back.setDepth(0);
+    this._notice.visible = false;
+    this._state = 'loading';
+    this._armLoadTimeout(false);
+    this._showPage(false);
     this._updateStatus();
   }
 
@@ -613,11 +613,14 @@ class PageView extends St.BoxLayout {
     this.setQuery(query);
     if (reloading) {
       this._state = 'loading';
+      this._armLoadTimeout(false);
+      this._frameGeneration = -1;
       // What is on screen belongs to the previous search. Take it away now
       // rather than leaving one query's results sitting under another's terms.
-      this._pageQuery = '';
       this._showPage(false);
       this._updateStatus();
+    } else {
+      this._deps.renderer.refresh();
     }
   }
 
@@ -641,11 +644,11 @@ class PageView extends St.BoxLayout {
 
   private _reload(): void {
     this._notice.visible = false;
-    if (this._nav.depth === 0) this._pageQuery = '';
     this._state = 'loading';
     this._showPage(this._nav.depth > 0);
     this._updateStatus();
-    this._deps.renderer.reload();
+    if (this._nav.depth > 0) this._deps.renderer.reload();
+    else this._deps.renderer.search(this._query, this._engineId);
   }
 
   /**
@@ -680,55 +683,62 @@ class PageView extends St.BoxLayout {
   // --- state ---------------------------------------------------------------
 
   private _onNav(nav: Nav): void {
-    const wasDeep = this._openShown;
+    if (nav.query !== this._query || nav.engine !== this._engineId) return;
+    if (nav.generation < this._generation) return;
     this._nav = nav;
     this._back.setDepth(nav.depth);
-    if ((nav.depth > 0) !== wasDeep) this._showOpenButton(nav.depth > 0);
     this._updateStatus();
   }
 
-  /** The escape hatch to the real browser, beside the pill, 30ms behind it. */
-  private _showOpenButton(show: boolean): void {
-    this._openShown = show;
-    this._open.remove_all_transitions();
-    this._open.set_pivot_point(0.5, 0.5);
-    if (show) {
-      this._open.opacity = 0;
-      this._open.set_scale(0.8, 0.8);
-      this._open.show();
-      ease(this._open, {opacity: 255, scale_x: 1, scale_y: 1, duration: 150, delay: 30});
-    } else {
-      ease(this._open, {opacity: 0, scale_x: 0.8, scale_y: 0.8, duration: 100,
-        onComplete: () => this._open.hide()});
-    }
-  }
-
   private _openCurrentInBrowser(): void {
-    this._deps.renderer.openCurrent();
-    Main.overview.hide();
+    if (this._nav.depth > 0 && this._nav.uri) launch(this._nav.uri);
+    else if (this._query) launch(engineFor(this._engineId).browser(this._query));
   }
 
   /** True while the user is on a page they followed, not on the results page. */
   get navigated(): boolean { return this._nav.depth > 0; }
 
-  private _onState(state: RendererState, detail: string, query: string): void {
+  private _onFrame(frame: Frame): void {
+    if (frame.query !== this._query || frame.engine !== this._engineId) return;
+    if (frame.generation !== this._generation) return;
+    if (!this._frame.showFrame(frame)) return;
+    this._frameGeneration = frame.generation;
+    if (this._state === 'ready') {
+      this._updateStatus();
+      this._showPage(true);
+    }
+  }
+
+  private _onState(state: RendererState, detail: string, query: string, engine: string, generation: number): void {
     // A load that finished for terms the user has already moved past says
     // nothing about what they are waiting for now.
-    if (query && this._query && query !== this._query) return;
+    if (query && query !== this._query) return;
+    if (engine && engine !== this._engineId) return;
+    if (state === 'loading') {
+      this._generation = generation;
+      this._frameGeneration = -1;
+      this._frame.resetSerial();
+      this._armLoadTimeout(false);
+    } else if (generation && generation < this._generation) return;
+    else if (generation > this._generation) {
+      this._generation = generation;
+      this._frame.resetSerial();
+    }
     this._state = state;
     this._updateStatus();
-    const engine = engineFor(this._engineId);
+    const chosen = engineFor(this._engineId);
     if (state === 'offline') {
       this._showOffline();
       return;
     }
     this._offlineBar.visible = false;
     if (state === 'blocked') {
-      this._showNotice(`${engine.label} is refusing this network`,
-        `${engine.label} answered with its "unusual traffic" check instead of results. That is decided by ` +
-        'the IP address (VPN exits are often flagged) and will not be worked around here.',
-        [['Use DuckDuckGo', () => this._deps.settings.set_string('engine', 'duckduckgo')],
-          ['Open in browser', () => this.activate()]]);
+      const alternate = this._engineId === 'duckduckgo' ? 'bing' : 'duckduckgo';
+      this._showNotice(`${chosen.label} needs verification`,
+        'This search engine asked for a browser check. Cookies can remember a session, but cannot guarantee access. ' +
+        'Continue in your browser or choose another engine.',
+        [['Open in browser', () => this.activate()],
+          [`Use ${engineFor(alternate).label}`, () => this._deps.settings.set_string('engine', alternate)]]);
     } else if (state === 'error' && this._nav.depth > 0) {
       // A followed page failed, not the engine: offer the way back, not a
       // reload of a results page the user is not looking at.
@@ -737,14 +747,14 @@ class PageView extends St.BoxLayout {
         [['Back to results', () => this._goBack()],
           ['Open in browser', () => this._openCurrentInBrowser()]]);
     } else if (state === 'error') {
-      this._showNotice(`${engine.label} could not be loaded`, detail,
-        [['Try again', () => this._deps.renderer.search(this._query, engine.id)],
+      this._showNotice(`${chosen.label} could not be loaded`, detail,
+        [['Try again', () => this._reload()],
           ['Open in browser', () => this.activate()]]);
     } else {
       this._notice.visible = false;
       // Ready means this query's page is painted; loading keeps the skeleton up.
-      if (state === 'ready') this._pageQuery = this._query;
-      this._showPage(state === 'ready' || this._nav.depth > 0);
+      const hasFrame = this._frameGeneration === this._generation;
+      this._showPage(state === 'ready' && hasFrame);
     }
   }
 
@@ -783,7 +793,8 @@ class PageView extends St.BoxLayout {
 
   /** Shown only once a load has taken long enough to be worth reporting. */
   private _updateSpinner(): void {
-    const loading = this._state === 'loading';
+    const loading = this._state === 'loading' ||
+      (this._state === 'ready' && this._frameGeneration !== this._generation);
     this._armLoadTimeout(loading);
     if (!loading) {
       if (this._spinnerTimer) GLib.source_remove(this._spinnerTimer);
@@ -794,7 +805,8 @@ class PageView extends St.BoxLayout {
     if (this._spinnerTimer) return;
     this._spinnerTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SPINNER_DELAY_MS, () => {
       this._spinnerTimer = 0;
-      if (this._state === 'loading') this._spinner.play();
+      if (this._state === 'loading' ||
+        (this._state === 'ready' && this._frameGeneration !== this._generation)) this._spinner.play();
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -809,10 +821,12 @@ class PageView extends St.BoxLayout {
     if (this._loadTimer) return;
     this._loadTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, LOAD_TIMEOUT_MS, () => {
       this._loadTimer = 0;
-      if (this._state !== 'loading') return GLib.SOURCE_REMOVE;
+      if (this._state !== 'loading' &&
+        !(this._state === 'ready' && this._frameGeneration !== this._generation)) return GLib.SOURCE_REMOVE;
       this._state = 'error';
+      this._updateStatus();
       this._showNotice('This is taking too long',
-        'The page renderer has not answered. It may have stopped; trying again starts it.',
+        'The search engine has not finished loading. Try again or continue in your browser.',
         [['Try again', () => this._reload()],
           ['Open in browser', () => this.activate()]]);
       return GLib.SOURCE_REMOVE;
@@ -864,11 +878,14 @@ class PageView extends St.BoxLayout {
         break;
       case 'engine':
         this._notice.visible = false;
-        this._pageQuery = '';
         this._state = 'loading';
         this._showPage(false);
         this._updateStatus();
-        if (this._query) this._deps.renderer.search(this._query, this._engineId);
+        this._frameGeneration = -1;
+        this._generation = -1;
+        this._nav = {depth: 0, title: '', uri: '', query: this._query, engine: this._engineId, generation: this._generation};
+        this._back.setDepth(0);
+        // The provider owns the single debounced load for an engine change.
         break;
       default:
         break;

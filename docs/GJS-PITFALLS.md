@@ -161,39 +161,21 @@ Measured with a plain `curl` and a realistic user agent:
 One reliable engine and a hand-rolled fallback is not a backend; it is a maintenance
 treadmill where every upstream redesign ships as a broken search bar.
 
-### Google specifically: the block is environmental, not behavioural
+### Verification requests: avoid attributing a cause we cannot measure
 
-An obvious idea is "render the JavaScript" or "look more like a human". Neither works.
+Earlier tests observed Google's homepage loading while its search path returned
+verification or an empty JavaScript bootstrap page. Those observations do not
+isolate runtime fingerprinting from IP reputation, network state, request pacing,
+consent, or other engine policy. The previous categorical conclusion that the
+JavaScript runtime alone caused the block was not established by the experiment.
 
-Google's response to a scripted client is ~45 KB containing **168 characters of
-visible text** — a redirect notice — with no result data in any form. Adding realism
-changes nothing:
-
-| Attempt | Result |
-|---|---|
-| Plain `curl` | `enablejs` page, 0 results |
-| `curl` + full Chrome headers, cookie jar, warm session, `Referer` | **identical** 168-char page |
-| WebKitGTK, clean IP, persistent profile — homepage | renders perfectly |
-| WebKitGTK, same warm session — `/search` | `unusual traffic` on the **first** request |
-
-The last two rows are the important pair. The same engine, session, and IP that
-render `google.com` correctly are refused at `/search`, and the refusal lands on
-request one — before any behaviour exists to look suspicious.
-
-That rules out the whole "simulate human activity" category. Typing cadence, mouse
-movement, dwell time, and randomised delays are not being measured. Google
-fingerprints the **JS runtime environment** and gates `/search` on it. The remaining
-levers are fingerprint spoofing, residential proxy rotation, and CAPTCHA-solving
-services; all three violate Google's ToS, would block publication on
-extensions.gnome.org, and push the cost onto the user, whose home IP gets flagged for
-ordinary browsing.
-
-> Correction to an earlier revision of this document, which concluded the block was
-> on "IP and request pattern". That was wrong, and wrong for an instructive reason:
-> the CAPTCHA observed at the time was self-inflicted by ~10 rapid test requests. On
-> a rested IP the baseline is the `enablejs` page, and the WebKit result above shows
-> the gate is environmental. Rate your own test traffic before drawing conclusions
-> from a rate limiter.
+The current renderer uses ordinary search paths and its own persistent cookie
+store. Cookies preserve session state; they are not proof that a visitor is human.
+We do not extract browser cookies, spoof fingerprints, rotate proxies or solve
+verification challenges. The UI offers a real-browser handoff and explicit engine
+choice. Updated measurements, including browser differences and failed runs, are
+in [SEARCH-ENGINE-FINDINGS.md](SEARCH-ENGINE-FINDINGS.md). The scraper measurements
+above are historical observations, not availability guarantees.
 
 ### Why SearXNG looked right, and why it is gone too
 

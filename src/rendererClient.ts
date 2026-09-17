@@ -16,19 +16,19 @@ export const RENDERER_BUS_NAME = 'io.github.searchdoessearch.Renderer';
 export const RENDERER_OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 
 /** A frame the renderer has written: raw RGBA, `stride` bytes per row. */
-export interface Frame { path: string; width: number; height: number; stride: number; serial: number; }
+export interface Frame { path: string; width: number; height: number; stride: number; serial: number; query: string; engine: string; generation: number; }
 export type RendererState = 'loading' | 'ready' | 'blocked' | 'error' | 'offline';
 /** What a clicked link does: follow it in this view, or hand it to the browser. */
 export type LinkMode = 'contained' | 'browser';
 /** Where the user is: depth 0 is the results page itself. */
-export interface Nav { depth: number; title: string; uri: string; }
+export interface Nav { depth: number; title: string; uri: string; query: string; engine: string; generation: number; }
 export type PointerKind = 'press' | 'release' | 'move' | 'leave';
 export type KeyKind = 'press' | 'release';
 
 export interface RendererListener {
   onFrame(frame: Frame): void;
   /** `query` is the search the state belongs to; anything else is stale. */
-  onState(state: RendererState, detail: string, query: string): void;
+  onState(state: RendererState, detail: string, query: string, engine: string, generation: number): void;
   onLaunched(url: string): void;
   onNav(nav: Nav): void;
   /** A link this view will not open at all; the argument is its scheme. */
@@ -108,7 +108,7 @@ export class RendererClient {
   setActive(active: boolean): void {
     if (active === this._active) return;
     this._active = active;
-    this._call('SetActive', new GLib.Variant('(b)', [active]));
+    if (this._proxy || active) this._call('SetActive', new GLib.Variant('(b)', [active]));
   }
 
   /** Start the renderer process before it is needed, so the first search is not also a cold start. */
@@ -299,13 +299,15 @@ export class RendererClient {
   private _onSignal(name: string, params: GLib.Variant): void {
     switch (name) {
       case 'Frame': {
-        const [path, width, height, stride, serial] = params.deepUnpack() as [string, number, number, number, number];
-        for (const l of this._listeners) l.onFrame({path, width, height, stride, serial});
+        const [path, width, height, stride, serial, query, engine, generation] = params.deepUnpack() as [string, number, number, number, number, string, string, number];
+        if (!this._matchesSearch(query, engine)) break;
+        for (const l of this._listeners) l.onFrame({path, width, height, stride, serial, query, engine, generation});
         break;
       }
       case 'State': {
-        const [state, detail, query] = params.deepUnpack() as [string, string, string];
-        this._emitState(state as RendererState, detail, query);
+        const [state, detail, query, engine, generation] = params.deepUnpack() as [string, string, string, string, number];
+        if (!this._matchesSearch(query, engine)) break;
+        this._emitState(state as RendererState, detail, query, engine, generation);
         break;
       }
       case 'Launched': {
@@ -314,8 +316,9 @@ export class RendererClient {
         break;
       }
       case 'Nav': {
-        const [depth, title, uri] = params.deepUnpack() as [number, string, string];
-        for (const l of this._listeners) l.onNav({depth, title, uri});
+        const [depth, title, uri, query, engine, generation] = params.deepUnpack() as [number, string, string, string, string, number];
+        if (!this._matchesSearch(query, engine)) break;
+        for (const l of this._listeners) l.onNav({depth, title, uri, query, engine, generation});
         break;
       }
       case 'Refused': {
@@ -328,7 +331,11 @@ export class RendererClient {
     }
   }
 
-  private _emitState(state: RendererState, detail: string, query = ''): void {
-    for (const l of this._listeners) l.onState(state, detail, query);
+  private _matchesSearch(query: string, engine: string): boolean {
+    return !!this._lastSearch && query === this._lastSearch[0] && engine === this._lastSearch[1];
+  }
+
+  private _emitState(state: RendererState, detail: string, query = this._lastSearch?.[0] ?? '', engine = this._lastSearch?.[1] ?? '', generation = 0): void {
+    for (const l of this._listeners) l.onState(state, detail, query, engine, generation);
   }
 }

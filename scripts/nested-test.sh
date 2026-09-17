@@ -26,10 +26,9 @@
 #     sized to its window, and an explicit one becomes primary, so the top bar
 #     renders on the monitor you cannot see. Resize the window instead.
 #
-# The nested shell shares ~/.local/share and dconf with the host, so it loads the
-# same installed extensions and the same enabled-extensions list. Enabling the
-# extension here therefore also enables it on the host (at the host's next read)
-# — pass --no-enable if that matters.
+# The default profile is isolated under the log directory: extension files,
+# dconf, cookies and caches stay out of the live desktop. --shared-profile is an
+# explicit opt-in to the old behavior of testing the user's installed profile.
 
 set -euo pipefail
 
@@ -40,6 +39,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HEADED=1                 # --headless flips this
 DO_BUILD=1
 DO_ENABLE=1
+ISOLATED=1
 START_GDR=0
 GDR_PORT=7339
 SIZE="1280x800"
@@ -69,7 +69,8 @@ Usage: $(basename "$0") [options]
   --gdr[=PORT]        --headless only: run gdrd against the nested session on
                       127.0.0.1:PORT (default $GDR_PORT) so gdr_* tools can see it.
                       Reads GDR_TOKEN, or generates and prints one.
-  --no-build          Skip compile+install; run whatever is already installed.
+  --no-build          Skip compilation; use the built dist in the isolated profile.
+  --shared-profile    Use/install the live user profile (changes real settings).
   --no-enable         Do not enable the extension in the nested session.
   --allow-launch      Let the renderer open real browsers (default: SDS_NO_LAUNCH=1).
   --debug             SDS_DEBUG=1 in the session (frame timings, scroll events).
@@ -90,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --gdr)               START_GDR=1 ;;
     --gdr=*)             START_GDR=1; GDR_PORT="${1#*=}" ;;
     --no-build)          DO_BUILD=0 ;;
+    --shared-profile)    ISOLATED=0 ;;
     --no-enable)         DO_ENABLE=0 ;;
     --allow-launch)      ALLOW_LAUNCH=1 ;;
     --debug)             DEBUG=1 ;;
@@ -203,13 +205,33 @@ build_and_install() {
   info "Source: $REPO_DIR ($rev)"
   # `make install` type-checks, compiles TS, compiles the schema, and clears the
   # target first — a stale .js the shell can still import is a debugging trap.
-  make -C "$REPO_DIR" install
-  success "Installed to ~/.local/share/gnome-shell/extensions/$UUID"
+  make -C "$REPO_DIR" install EXT_DIR="$INSTALL_DIR"
+  success "Installed to $INSTALL_DIR"
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────
 preflight
-[[ $DO_BUILD -eq 1 ]] && build_and_install
+mkdir -p "$LOG_DIR"
+LOG_DIR="$(cd "$LOG_DIR" && pwd)"
+if [[ $ISOLATED -eq 1 ]]; then
+  PROFILE_ROOT="${SDS_NESTED_ROOT:-$LOG_DIR/profile}"
+  mkdir -p "$PROFILE_ROOT"/{config,data,cache,state}
+  PROFILE_ROOT="$(cd "$PROFILE_ROOT" && pwd)"
+  export XDG_CONFIG_HOME="$PROFILE_ROOT/config"
+  export XDG_DATA_HOME="$PROFILE_ROOT/data"
+  export XDG_CACHE_HOME="$PROFILE_ROOT/cache"
+  export XDG_STATE_HOME="$PROFILE_ROOT/state"
+  info "Isolated profile: $PROFILE_ROOT"
+fi
+INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
+if [[ $DO_BUILD -eq 1 ]]; then
+  build_and_install
+elif [[ $ISOLATED -eq 1 ]]; then
+  [[ -f "$REPO_DIR/dist/$UUID/extension.js" ]] || { error "No build found; run without --no-build"; exit 1; }
+  mkdir -p "$INSTALL_DIR"
+  cp -r "$REPO_DIR/dist/$UUID/." "$INSTALL_DIR/"
+  glib-compile-schemas "$INSTALL_DIR/schemas"
+fi
 
 mkdir -p "$LOG_DIR"
 SHELL_LOG="$LOG_DIR/nested-shell-$(date +%H%M%S).log"
@@ -228,6 +250,18 @@ done < <("$DBUS_DAEMON" --session --print-address=1 --print-pid=1 --fork)
 [[ -n "${BUS_ADDRESS:-}" ]] || { error "dbus-daemon printed no address"; exit 1; }
 export DBUS_SESSION_BUS_ADDRESS="$BUS_ADDRESS"
 success "Bus up (pid ${BUS_PID:-?})"
+# Export a reproducible command environment without printing live-user paths
+# as if they were the isolated profile.
+{
+  for key in DBUS_SESSION_BUS_ADDRESS XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME; do
+    printf 'export %s=%q\n' "$key" "${!key:-}"
+  done
+  printf 'export WAYLAND_DISPLAY=%q\n' "$WL_DISPLAY"
+} > "$LOG_DIR/session.env"
+if [[ $ISOLATED -eq 1 ]]; then
+  gsettings set org.gnome.shell disable-user-extensions false
+fi
+
 
 header "Starting the nested GNOME Shell"
 # A shell that has just been asked to quit still holds its wayland socket for a
@@ -245,6 +279,8 @@ if [[ -e "$lock" ]]; then
     warn "Still held — using $WL_DISPLAY instead"
   fi
 fi
+
+printf 'export WAYLAND_DISPLAY=%q\n' "$WL_DISPLAY" >> "$LOG_DIR/session.env"
 
 SHELL_ENV=(
   "DBUS_SESSION_BUS_ADDRESS=$BUS_ADDRESS"
