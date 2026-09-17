@@ -12,14 +12,16 @@
       <choices>
         <choice value="duckduckgo"/>
         <choice value="google"/>
+        <choice value="bing"/>
+        <choice value="brave"/>
+        <choice value="startpage"/>
       </choices>
       <default>'duckduckgo'</default>
       <summary>Results page engine</summary>
       <description>
-        Which engine's results page is rendered in the overview. DuckDuckGo's HTML
-        endpoint renders reliably; Google answers many networks (VPN exits in
-        particular) with its "unusual traffic" check, which is reported rather than
-        worked around.
+        The search engine shown in Activities. Uses the normal search page.
+        Availability depends on the engine and network; verification challenges
+        can be continued in your default browser. Engines never switch automatically.
       </description>
     </key>
 

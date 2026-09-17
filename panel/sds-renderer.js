@@ -78,8 +78,6 @@ export const BUS_NAME = 'io.github.searchdoessearch.Renderer';
 export const OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 const DEBUG = !!GLib.getenv('SDS_DEBUG');
 const DUMP_HTML = GLib.getenv('SDS_DUMP_HTML') || '';
-// A browser UA: DuckDuckGo's HTML endpoint serves a plain, JS-free SERP to it.
-const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0';
 const DEFAULT_WIDTH = 800;
 const DEFAULT_HEIGHT = 600;
 // Repaints arrive in bursts; wait this long for the burst to settle before
@@ -156,11 +154,16 @@ export const INTERFACE_XML = `
       <arg type="u" name="height"/>
       <arg type="u" name="stride"/>
       <arg type="u" name="serial"/>
+      <arg type="s" name="query"/>
+      <arg type="s" name="engine"/>
+      <arg type="u" name="generation"/>
     </signal>
     <signal name="State">
       <arg type="s" name="state"/>
       <arg type="s" name="detail"/>
       <arg type="s" name="query"/>
+      <arg type="s" name="engine"/>
+      <arg type="u" name="generation"/>
     </signal>
     <signal name="Launched">
       <arg type="s" name="url"/>
@@ -169,6 +172,9 @@ export const INTERFACE_XML = `
       <arg type="u" name="depth"/>
       <arg type="s" name="title"/>
       <arg type="s" name="uri"/>
+      <arg type="s" name="query"/>
+      <arg type="s" name="engine"/>
+      <arg type="u" name="generation"/>
     </signal>
     <signal name="Refused">
       <arg type="s" name="scheme"/>
@@ -188,7 +194,7 @@ export const INTERFACE_XML = `
 const ENGINES = {
   duckduckgo: {
     label: 'DuckDuckGo',
-    serp: q => `https://html.duckduckgo.com/html/?q=${enc(q)}`,
+    serp: q => `https://duckduckgo.com/?q=${enc(q)}&ia=web`,
     hosts: /(^|\.)duckduckgo\.com$/i,
     // WebKit URL patterns: the engine's own stylesheet is scoped to these, so a
     // page the user followed renders as itself rather than as a mangled SERP.
@@ -204,6 +210,27 @@ const ENGINES = {
     match: ['*://*.google.com/*'],
     // "Our systems have detected unusual traffic from your computer network."
     blocked: uri => (/\/sorry(\/|$)/.test(pathOf(uri)) ? 'unusual-traffic' : null),
+  },
+  bing: {
+    label: 'Bing',
+    serp: q => `https://www.bing.com/search?q=${enc(q)}`,
+    hosts: /(^|\.)bing\.com$/i,
+    match: ['*://*.bing.com/*'],
+    blocked: () => null,
+  },
+  brave: {
+    label: 'Brave Search',
+    serp: q => `https://search.brave.com/search?q=${enc(q)}`,
+    hosts: /(^|\.)brave\.com$/i,
+    match: ['*://search.brave.com/*'],
+    blocked: uri => (/captcha/i.test(pathOf(uri)) ? 'challenge' : null),
+  },
+  startpage: {
+    label: 'Startpage',
+    serp: q => `https://www.startpage.com/sp/search?query=${enc(q)}`,
+    hosts: /(^|\.)startpage\.com$/i,
+    match: ['*://*.startpage.com/*'],
+    blocked: uri => (/captcha|verify/i.test(pathOf(uri)) ? 'challenge' : null),
   },
 };
 
@@ -383,6 +410,13 @@ function pageCss(engineId, t) {
   cite { color: ${t.dim} !important; font-size: 0.85em !important; }
   `;
   }
+  if (engineId !== 'duckduckgo') {
+    // These engines change their markup often. Keep their page intact instead
+    // of hiding a selector that may become the results container tomorrow.
+    return common + `
+    main, #b_results, #results { max-width: 880px !important; margin-left: auto !important; margin-right: auto !important; }
+    `;
+  }
   return common + `
   #header, .header, .header--html, .header__form, .header__logo-wrap,
   .search--header, form.search, .search__input, .search__button,
@@ -393,6 +427,8 @@ function pageCss(engineId, t) {
   #links_wrapper > form > .nav-link {
     display: none !important;
   }
+  html, body { min-width: 0 !important; max-width: 100% !important; overflow-x: hidden !important; }
+  .serp__main { min-width: 0 !important; max-width: 100% !important; }
   .body--html { background: ${t.bg} !important; }
   .serp__results, #links, .results, .site-wrapper, .serp__top-right, .serp {
     width: auto !important; max-width: none !important; min-width: 0 !important;
@@ -460,6 +496,10 @@ class Renderer {
     this._onExit = onExit;
     this._query = '';
     this._engineId = 'duckduckgo';
+    this._generation = 0;
+    this._committedGeneration = -1;
+    this._paintedGeneration = -1;
+    this._finishedGeneration = -1;
     this._width = DEFAULT_WIDTH;
     this._height = DEFAULT_HEIGHT;
     this._scale = 1;
@@ -494,7 +534,8 @@ class Renderer {
     this._ucm = new WebKit2.UserContentManager();
     this._web = new WebKit2.WebView({user_content_manager: this._ucm, web_context: this._buildWebContext()});
     const settings = this._web.get_settings();
-    settings.set_user_agent(USER_AGENT);
+    // Let WebKit advertise its own engine and version. Claiming to be Firefox
+    // here is inconsistent with the actual rendering engine.
     settings.set_enable_javascript(true);
     settings.set_enable_developer_extras(false);
     // Pixels are read back through cairo; GPU compositing would only add a copy.
@@ -551,6 +592,8 @@ class Renderer {
     });
     // Every repaint of the off-screen window is a candidate frame.
     this.window.connect('damage-event', () => {
+      if (this._committedGeneration === this._generation)
+        this._paintedGeneration = this._generation;
       this._scheduleFrame();
       return false;
     });
@@ -573,7 +616,7 @@ class Renderer {
     // The name lookup for the engine is on the critical path of the first
     // search; start it now, while the overview is still animating open.
     try {
-      this._web.get_context().prefetch_dns('html.duckduckgo.com');
+      this._web.get_context().prefetch_dns('duckduckgo.com');
       this._web.get_context().prefetch_dns('www.google.com');
     } catch { /* older WebKit: one DNS lookup slower, nothing else */ }
 
@@ -634,7 +677,19 @@ class Renderer {
   _setState(state, detail = '') {
     this._state = state;
     this._stateDetail = detail;
-    this.emitSignal('State', new GLib.Variant('(sss)', [state, detail, this._query]));
+    this.emitSignal('State', new GLib.Variant('(ssssu)',
+      [state, detail, this._query, this._engineId, this._generation]));
+  }
+
+  _beginLoad() {
+    this._generation = (this._generation + 1) >>> 0;
+    this._startedGeneration = -1;
+    this._committedGeneration = -1;
+    this._paintedGeneration = -1;
+    this._finishedGeneration = -1;
+    if (this._frameTimer) GLib.source_remove(this._frameTimer);
+    if (this._settleTimer) GLib.source_remove(this._settleTimer);
+    this._frameTimer = this._settleTimer = 0;
   }
 
   _launch(url) {
@@ -644,7 +699,11 @@ class Renderer {
   }
 
   _onLoadChanged(ev) {
+    if (ev === WebKit2.LoadEvent.STARTED) this._startedGeneration = this._generation;
     if (ev === WebKit2.LoadEvent.COMMITTED) {
+      if (this._startedGeneration !== this._generation) return;
+      this._committedGeneration = this._generation;
+      this._paintedGeneration = -1;
       this._goingBack = false;
       // Counted on commit, not at the policy decision: a link that 404s at the
       // DNS stage never becomes a page the user can go back from.
@@ -654,14 +713,62 @@ class Renderer {
         this._emitNav();
       }
     }
+    if (this._committedGeneration !== this._generation) return;
     if (ev === WebKit2.LoadEvent.COMMITTED || ev === WebKit2.LoadEvent.FINISHED) this._checkBlocked();
     if (ev === WebKit2.LoadEvent.FINISHED && !this._blocked) {
       this._loading = false;
-      this._setState('ready', this._engine.label);
       this._emitNav();
-      this._scheduleFrame();
-      if (DUMP_HTML) this._dumpPage();
+      this._inspectFinishedPage();
     }
+  }
+
+  _inspectFinishedPage(attempt = 0) {
+    const generation = this._generation;
+    if (this._depth > 0) {
+      this._finishPage(generation);
+      return;
+    }
+    this._web.run_javascript(
+      'JSON.stringify({title:document.title,text:(document.body?.innerText||"").slice(0,500),links:document.querySelectorAll("a[href]").length,results:document.querySelectorAll(".result,[data-testid*=result]").length})',
+      null, (view, res) => {
+        if (generation !== this._generation || this._blocked) return;
+        try {
+          const page = JSON.parse(view.run_javascript_finish(res).get_js_value().to_string());
+          const title = String(page.title || '');
+          const text = String(page.text || '').trim();
+          const challenge = (this._engineId === 'brave' && /^captcha\b/i.test(title))
+            || (this._engineId === 'startpage' && /^verifying your request\b/i.test(text));
+          if (challenge) {
+            this._blocked = true;
+            this._setState('blocked', this._engine.label);
+            return;
+          }
+          if (this._engineId === 'google' && !text && page.links === 0) {
+            this._setState('error', 'Google returned an empty page');
+            return;
+          }
+          // DuckDuckGo's normal page can finish its initial document before its
+          // result list arrives. Inspect the same page briefly; do not refetch.
+          if (this._engineId === 'duckduckgo' && page.results === 0 && attempt < 3) {
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
+              if (generation === this._generation) this._inspectFinishedPage(attempt + 1);
+              return GLib.SOURCE_REMOVE;
+            });
+            return;
+          }
+        } catch (error) {
+          if (DEBUG) printerr(`[sds-renderer] page inspection failed: ${error}`);
+        }
+        this._finishPage(generation);
+      });
+  }
+
+  _finishPage(generation) {
+    if (generation !== this._generation || this._blocked) return;
+    this._finishedGeneration = generation;
+    this.window.queue_draw();
+    this._scheduleFrame();
+    if (DUMP_HTML) this._dumpPage();
   }
 
   /**
@@ -671,7 +778,8 @@ class Renderer {
   _emitNav() {
     const title = this._depth > 0 ? (this._web.get_title() || hostOf(this._web.get_uri() ?? '')) : '';
     const uri = this._depth > 0 ? (this._web.get_uri() ?? '') : '';
-    this.emitSignal('Nav', new GLib.Variant('(uss)', [this._depth >>> 0, title, uri]));
+    this.emitSignal('Nav', new GLib.Variant('(ussssu)',
+      [this._depth >>> 0, title, uri, this._query, this._engineId, this._generation]));
   }
 
   /**
@@ -682,6 +790,7 @@ class Renderer {
    */
   _follow(uri) {
     const target = unwrapRedirect(uri);
+    this._beginLoad();
     this._pendingDepth = 1;
     this._loading = true;
     this._setState('loading', hostOf(target));
@@ -782,6 +891,11 @@ class Renderer {
     // the engine; that is the page working, not a link to follow elsewhere.
     const engineForm = navType === WebKit2.NavigationType.FORM_SUBMITTED && onEngine;
     if (ownLoad || engineForm) {
+      if (engineForm) {
+        this._beginLoad();
+        this._loading = true;
+        this._setState('loading', this._engine.label);
+      }
       decision.use();
       return true;
     }
@@ -803,6 +917,7 @@ class Renderer {
         if (userStep) this._follow(target);
         return true;
       }
+      this._beginLoad();
       if (userStep) this._pendingDepth = 1;
       this._loading = true;
       this._setState('loading', hostOf(uri));
@@ -848,7 +963,9 @@ class Renderer {
     // Nothing is looking at these pixels: the overview is closed. The page keeps
     // living — a search a moment later should still be warm — but reading it
     // back and writing 2MB per repaint for an audience of nobody is pure cost.
-    if (!this._active) return;
+    if (!this._active || this._blocked || this._committedGeneration !== this._generation
+        || this._paintedGeneration !== this._generation) return;
+    const generation = this._generation;
     const gdkWindow = this.window.get_window();
     if (!gdkWindow) return;
     const t0 = now();
@@ -863,8 +980,12 @@ class Renderer {
         ? this._exportCost + COST_SMOOTHING * ((t2 - t0) - this._exportCost)
         : (t2 - t0);
     this._serial = (this._serial + 1) >>> 0;
-    this.emitSignal('Frame', new GLib.Variant('(suuuu)',
-      [path, pixbuf.get_width(), pixbuf.get_height(), pixbuf.get_rowstride(), this._serial]));
+    if (generation !== this._generation) return;
+    this.emitSignal('Frame', new GLib.Variant('(suuuussu)',
+      [path, pixbuf.get_width(), pixbuf.get_height(), pixbuf.get_rowstride(), this._serial,
+        this._query, this._engineId, generation]));
+    if (this._finishedGeneration === generation && this._state !== 'ready')
+      this._setState('ready', this._engine.label);
     if (DEBUG) {
       printerr(`[sds-renderer] frame #${this._serial} ${pixbuf.get_width()}x${pixbuf.get_height()} ` +
         `readback ${(t1 - t0).toFixed(1)}ms write ${(t2 - t1).toFixed(1)}ms`);
@@ -954,7 +1075,9 @@ class Renderer {
       this._engineId = engineId;
       this._applyPageStyle();
     }
+    this._web.stop_loading();
     this._query = query;
+    this._beginLoad();
     this._blocked = false;
     this._loading = true;
     // A new search is the ground floor again: whatever the user had followed is
@@ -978,6 +1101,7 @@ class Renderer {
     // would travel one page while the badge counted two.
     if (this._depth <= 0 || this._goingBack) return;
     this._goingBack = true;
+    this._beginLoad();
     this._depth -= 1;
     this._pendingDepth = 0;
     this._loading = true;
@@ -1078,6 +1202,8 @@ class Renderer {
   /** Load the current page again: the results page, or the page followed to. */
   Reload() {
     this._touchIdle();
+    this._web.stop_loading();
+    this._beginLoad();
     this._loading = true;
     this._setState('loading', this._depth > 0 ? hostOf(this._web.get_uri() ?? '') : this._engine.label);
     if (this._depth > 0) this._web.reload();

@@ -38,6 +38,8 @@ export function openInDefaultBrowser(url: string): boolean {
     return false;
   }
 
+  if (GLib.getenv('SDS_NO_LAUNCH') === '1') return true;
+
   try {
     Gio.AppInfo.launch_default_for_uri(url, null);
     return true;

@@ -242,27 +242,24 @@ leaves it installed for everyone else.
    the results page, that page once you have followed a link. So does
    middle-click or **Ctrl+click** on any link.
 
-Four settings, all in Extension Settings: which engine's page is rendered
-(DuckDuckGo or Google), whether links open in the overview or in your browser,
-whether the section shows for every search or only when nothing else matched, and
-whether it is moved above the other sections.
+Four settings, all in Extension Settings: search engine (DuckDuckGo, Google,
+Bing, Brave Search or Startpage), where links open, when web results appear, and
+where the section sits among local matches.
 
-**Why DuckDuckGo's page?** Because of the engines tested, only its HTML endpoint
-stayed reliable: Mojeek rate-limits to roughly one query per 30–60 seconds per
-IP, Brave's markup is build-hashed and breaks on every deploy, and Bing and
-Startpage answer with CAPTCHAs.
+The normal DuckDuckGo search page is the default. The renderer keeps its own
+session cookies; it never reads your browser profile. Cookies may remember
+consent or verification, but they do not guarantee access: engine policy,
+network reputation, browser compatibility and request rate can all matter.
+A verification request offers **Open in browser** or an explicit engine change.
+The extension never switches engines or sends a query to extra engines silently.
 
-Google is worth spelling out, because "just render the JavaScript" is such an
-obvious idea. Its response to a scripted client is 168 characters of redirect
-notice with no result data in it at all, and adding a full Chrome header set,
-cookie jar, and warm session returns the byte-identical page. Rendering it in a
-real browser engine does not help either: WebKitGTK on a rested IP loads
-`google.com` perfectly and is then refused at `/search` on the *first* request.
-The gate is on the JavaScript runtime environment, not on behaviour, so no amount
-of simulated human activity reaches it. Google stays selectable because on an
-unflagged network it works; when it does not, the extension says so rather than
-pretending. The full measurements are in
-[docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md).
+See [the engine test findings](docs/SEARCH-ENGINE-FINDINGS.md) for measured
+outcomes and limitations. A supported engine means its normal search URL is
+available; it does not promise that every network will receive results.
+
+The browser button remains available while loading. A short pause in typing
+starts a search, and query/engine/generation checks prevent previous results
+from appearing under new terms. Clearing search cancels any pending load.
 
 ### The results page, inside the overview
 
@@ -293,11 +290,8 @@ on the WebView. Measured on a 812×464 page: one wheel notch shows in the overvi
   classes, and the stylesheet injected into the page takes its colours and font
   from the running GTK theme (`theme_base_color`, the `:link` colour,
   `gtk-font-name`), so the page matches whatever the rest of the desktop looks like.
-- **Engine:** DuckDuckGo's HTML endpoint renders reliably. Google is selectable,
-  but from a flagged network (VPN exits in particular) it answers `/sorry`
-  ("unusual traffic") even with a persistent cookie profile and a browser user
-  agent; the renderer detects that page, stops, and the overview offers DuckDuckGo
-  or your browser. It does not attempt to get past the check.
+- **Engine:** normal search pages are rendered directly. Verification requests
+  are reported clearly with a browser handoff and an alternative engine.
 
 ---
 

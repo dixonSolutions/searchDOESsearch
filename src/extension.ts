@@ -2,6 +2,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import St from 'gi://St';
 import {PageView, linkModeOf} from './pageView.js';
 import {RendererClient} from './rendererClient.js';
 import {SearchProvider, SearchProviderOptions} from './searchProvider.js';
@@ -15,6 +16,8 @@ export default class SearchDoesSearchExtension extends Extension {
   private _settingsChangedId = 0;
   private _overviewShowingId = 0;
   private _overviewHiddenId = 0;
+  private _entry: St.Entry | null = null;
+  private _entryChangedId = 0;
 
   private _readOptions(): Partial<SearchProviderOptions> {
     return {engine: this._settings?.get_string('engine') ?? 'duckduckgo'};
@@ -54,11 +57,24 @@ export default class SearchDoesSearchExtension extends Extension {
     // A closed overview still had a live page exporting every repaint into it —
     // an animating ad kept a full-window readback running for an audience of
     // nobody. The page stays loaded; only the exporting stops.
-    this._overviewHiddenId = Main.overview.connect('hidden', () => this._renderer?.setActive(false));
+    this._overviewHiddenId = Main.overview.connect('hidden', () => {
+      this._provider?.suspend();
+      this._renderer?.setActive(false);
+    });
     Main.overview.searchController.addProvider(provider);
+    this._entry = (Main.overview as unknown as {searchEntry?: St.Entry}).searchEntry ?? null;
+    if (this._entry) {
+      this._entryChangedId = this._entry.clutter_text.connect('text-changed', () => {
+        const query = this._entry?.get_text().trim().split(/\s+/).join(' ') ?? '';
+        this._provider?.previewQuery(query);
+      });
+    }
   }
 
   disable(): void {
+    if (this._entry && this._entryChangedId) this._entry.clutter_text.disconnect(this._entryChangedId);
+    this._entryChangedId = 0;
+    this._entry = null;
     if (this._overviewShowingId) {
       Main.overview.disconnect(this._overviewShowingId);
       this._overviewShowingId = 0;

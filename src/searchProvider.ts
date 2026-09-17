@@ -2,6 +2,7 @@ import St from 'gi://St';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {openInDefaultBrowser} from './browserLauncher.js';
+import {engineFor} from './engines.js';
 
 interface ResultMeta { id: string; name: string; description: string; createIcon: (size: number) => St.Widget; }
 
@@ -29,25 +30,14 @@ export interface SearchProviderOptions {
   createView?: () => ResultView;
 }
 
-/**
- * A keystroke changes the terms several times a second; the renderer loads the
- * page only once they have held still this long. Meanwhile the view keeps the
- * previous page and shows the new terms in its header.
- *
- * The page is not shown until it belongs to the terms on screen, so waiting
- * longer buys nothing: the sooner the load starts, the sooner the skeleton is
- * replaced by real results. 120ms is short enough to overlap the tail of a
- * keystroke burst; the floor keeps a fast typist from queueing a load per word.
+/** Wait for a short pause in typing; cap requests during slower continuous input.
+ * Starting loads for partial words wastes work and increases engine challenges.
+ * The local search UI still updates immediately, independently of this pacing.
  */
-const RENDER_DEBOUNCE_MS = 120;
-/** Never start two page loads closer together than this. */
-const RENDER_MIN_INTERVAL_MS = 300;
+const RENDER_DEBOUNCE_MS = 250;
+const RENDER_MIN_INTERVAL_MS = 700;
 
 const PAGE_RESULT_ID = 'sds:page';
-const BROWSER_URLS: Record<string, (q: string) => string> = {
-  duckduckgo: q => `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
-  google: q => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
-};
 
 /**
  * Section heading for the results (the extension's own name), and the reason this
@@ -59,7 +49,7 @@ const BROWSER_URLS: Record<string, (q: string) => string> = {
  */
 function createProviderAppInfo(): Gio.AppInfo {
   const appInfo = Gio.AppInfo.create_from_commandline(
-    'true', 'searchDOESsearch', Gio.AppInfoCreateFlags.NONE);
+    'true', 'Web search', Gio.AppInfoCreateFlags.NONE);
   appInfo.get_icon = () => new Gio.ThemedIcon({name: 'web-browser-symbolic'});
   appInfo.should_show = () => true;
   return appInfo;
@@ -72,6 +62,7 @@ export class SearchProvider {
   readonly canLaunchSearch = true;
   private _options: SearchProviderOptions;
   private _query = '';
+  private _suspended = false;
   private _rendered = '';
   private _debounceId = 0;
   private _lastRenderAt = 0;
@@ -81,7 +72,10 @@ export class SearchProvider {
   updateOptions(options: Partial<SearchProviderOptions>): void {
     const engineChanged = options.engine !== undefined && options.engine !== this._options.engine;
     this._options = {...this._options, ...options};
-    if (engineChanged) this._rendered = '';
+    if (engineChanged) {
+      this._rendered = '';
+      if (this._query && !this._suspended) this._scheduleRender(this._query);
+    }
   }
 
   /**
@@ -89,15 +83,29 @@ export class SearchProvider {
    * across term changes, so the page view persists while the user types and only
    * the query it shows changes.
    */
+  /** Mask the old page before GNOME's own search-provider debounce runs. */
+  previewQuery(query: string): void {
+    if (this._view?.navigated && query !== this._query) this._rendered = '';
+    this._view?.setQuery(query);
+    if (!query) {
+      this._query = '';
+      this._cancelDebounce();
+    }
+  }
+
   getInitialResultSet(terms: string[], cancellable: Gio.Cancellable): Promise<string[]> {
     const query = terms.join(' ').trim();
     if (!query || cancellable.is_cancelled()) {
       this._cancelDebounce();
+      this._query = '';
+      this._view?.setQuery('');
       return Promise.resolve([]);
     }
+    this._suspended = false;
+    if (this._view?.navigated && query !== this._query) this._rendered = '';
     this._query = query;
     this._view?.setQuery(query);
-    this._scheduleRender(query);
+    this._scheduleRender(query, cancellable);
     return Promise.resolve([PAGE_RESULT_ID]);
   }
 
@@ -138,30 +146,29 @@ export class SearchProvider {
   launchSearch(terms: string[]): void {
     const query = terms.join(' ').trim();
     if (!query) return;
-    const toUrl = BROWSER_URLS[this._options.engine] ?? BROWSER_URLS.duckduckgo;
-    openInDefaultBrowser(toUrl(query));
+    openInDefaultBrowser(engineFor(this._options.engine).browser(query));
   }
 
   filterResults(results: string[], max: number): string[] { return results.slice(0, max); }
 
-  private _scheduleRender(query: string): void {
+  private _scheduleRender(query: string, cancellable?: Gio.Cancellable): void {
     this._cancelDebounce();
     if (!this._options.renderer) return;
     const sinceLast = GLib.get_monotonic_time() / 1000 - this._lastRenderAt;
     const wait = Math.max(RENDER_DEBOUNCE_MS, RENDER_MIN_INTERVAL_MS - sinceLast);
     this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(wait), () => {
       this._debounceId = 0;
-      if (query !== this._query || !this._options.renderer) return GLib.SOURCE_REMOVE;
+      if (cancellable?.is_cancelled() || query !== this._query || !this._options.renderer) return GLib.SOURCE_REMOVE;
       // The same query coming back (the overview was reopened) keeps the page —
       // unless the user followed links from it, in which case the results page
       // is no longer what is showing and settling has to bring it back.
       const reloading = query !== this._rendered || (this._view?.navigated ?? false);
+      this._view?.querySettled(query, reloading);
       if (reloading) {
         this._rendered = query;
         this._lastRenderAt = GLib.get_monotonic_time() / 1000;
         this._options.renderer.search(query, this._options.engine);
       }
-      this._view?.querySettled(query, reloading);
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -171,8 +178,14 @@ export class SearchProvider {
     this._debounceId = 0;
   }
 
-  destroy(): void {
+  /** A hidden overview must not start a queued request. */
+  suspend(): void {
+    this._suspended = true;
     this._cancelDebounce();
+  }
+
+  destroy(): void {
+    this.suspend();
     this._query = '';
     this._rendered = '';
     this._view = null;

@@ -1,0 +1,19 @@
+# Search engine endpoint findings
+
+Observed on 2026-09-18 from one network, with the installed WebKit2 4.1 and Google Chrome. These are samples, not availability guarantees; search sites can vary by IP address, region, account state, browser engine, and time. The query was `gnome shell extensions`. Each engine was requested once for the primary comparison. No challenge was solved or retried.
+
+| Engine | Normal results URL used by the renderer | WebKit2 4.1 observation | Chrome headless observation |
+| --- | --- | --- | --- |
+| DuckDuckGo | `https://duckduckgo.com/?q=gnome%20shell%20extensions&ia=web` | Relevant title and result elements; ~2–3 s in the small probe | Without `ia=web`, Chrome did not finish `--dump-dom` within 12 s |
+| Google | `https://www.google.com/search?q=gnome%20shell%20extensions` | Empty `Google Search` page (0 links) | Did not finish `--dump-dom` within 12 s |
+| Bing | `https://www.bing.com/search?q=gnome%20shell%20extensions` | Relevant GNOME text and links; ~3 s | Returned HTML in ~7 s, but its result titles were unrelated Japanese news despite the query in the page title |
+| Brave Search | `https://search.brave.com/search?q=gnome%20shell%20extensions` | Query title and links, but captured text was mainly the site footer; useful results were not established | Returned a CAPTCHA page in ~8 s |
+| Startpage | `https://www.startpage.com/sp/search?query=gnome%20shell%20extensions` | `Verifying your request... Loading...` with one link | The older `/search?q=` URL returned `Access Denied` in ~7 s; that was **not** the supported URL retested in WebKit |
+
+The former DuckDuckGo `html.duckduckgo.com/html/` path is no longer used. The normal DuckDuckGo URL with `ia=web` produced visible result elements in a fresh WebKit profile. An initial fresh-profile probe without `ia=web` finished with zero result elements, while a second run using that profile showed results. A separate fresh profile with `ia=web` showed results on its first run. This small comparison does not establish that cookies caused the difference; asynchronous page rendering or network variability can also explain it. The extension retains its own WebKit site data and cookies across runs, but it does not read cookies from the user's browser.
+
+The renderer uses WebKit's own user agent. Previously it claimed to be Firefox 128 while rendering with WebKit. That mismatch was removed as a consistency fix; these probes do not prove it reduces challenges. The installed Firefox could not be compared: its Snap launcher exited before starting because `snap-confine` lacked `cap_dac_override` in this environment. No personal Firefox profile was opened.
+
+Engine choices expose their ordinary results pages. A challenge or access denial remains an engine response, not something the extension can make reliable. The renderer recognizes the observed Google `/sorry`, Brave CAPTCHA title, and Startpage verification text and reports a blocked state. It does not retry or work around those pages. Users can choose another engine or open the query in their default browser.
+
+To repeat the browser comparison, use a fresh temporary profile for each engine and the URLs above. For Chrome, run `google-chrome --headless=new --disable-gpu --no-first-run --no-default-browser-check --user-data-dir=<temporary-directory> --dump-dom '<URL>'` with an external 12-second limit. For a representative WebKit result, load the same URL in a `WebKit2.WebView` (4.1), wait for `WebKit2.LoadEvent.FINISHED`, then inspect `document.title`, `document.body.innerText`, and result anchors. A page may populate results after `FINISHED`; the renderer allows a short local DOM settling interval for DuckDuckGo without sending another request. Compare actual titles and destination links, since a successful HTTP load or a matching page title alone did not establish useful results in the Chrome Bing probe.
