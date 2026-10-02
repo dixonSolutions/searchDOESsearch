@@ -111,10 +111,12 @@ function setCursor(actor: Clutter.Actor, name: CursorName, perActorOnly = false)
     return true;
   }
   if (perActorOnly) return false;
-  const cursors = (Meta as unknown as {Cursor?: Record<string, Meta.Cursor>}).Cursor;
-  if (cursors) {
+  // Neither exists in the Clutter 18 typings, so both are reached structurally.
+  const cursors = (Meta as unknown as {Cursor?: Record<string, number>}).Cursor;
+  const display = global.display as unknown as {set_cursor?: (cursor: number) => void};
+  if (cursors && typeof display.set_cursor === 'function') {
     try {
-      global.display.set_cursor(cursors[name === 'INHERIT' ? 'DEFAULT' : name] ?? cursors.DEFAULT);
+      display.set_cursor(cursors[name === 'INHERIT' ? 'DEFAULT' : name] ?? cursors.DEFAULT);
     } catch { /* a Shell without this cursor keeps the one it has */ }
   }
   return false;
@@ -327,8 +329,9 @@ export class SearchWindow {
     // cannot be typed into or escaped from is worse than no window. Clutter 18
     // dropped get_seat_state(), so this asks whichever question the grab has.
     const probe = grab as unknown as {is_revoked?: () => boolean; get_seat_state?: () => number};
+    const grabState = (Clutter as unknown as {GrabState?: {KEYBOARD: number}}).GrabState;
     const lost = probe.is_revoked?.()
-      ?? (probe.get_seat_state ? (probe.get_seat_state() & Clutter.GrabState.KEYBOARD) === 0 : false);
+      ?? (probe.get_seat_state && grabState ? (probe.get_seat_state() & grabState.KEYBOARD) === 0 : false);
     if (lost) {
       Main.popModal(grab);
       return;
