@@ -95,7 +95,12 @@ export default class SearchDoesSearchExtension extends Extension {
     // open means the first keystroke meets a warm renderer.
     this._overviewShowingId = Main.overview.connect('showing', () => {
       this._window?.close();
-      if (this._settings?.get_string('section-visibility') === 'never') return;
+      if (this._settings?.get_string('section-visibility') === 'never') {
+        // The overview will never show the page, and the window that just
+        // closed left the renderer on because the overview was already up.
+        this._renderer?.setActive(false);
+        return;
+      }
       this._renderer?.prewarm();
       this._renderer?.setActive(true);
     });
