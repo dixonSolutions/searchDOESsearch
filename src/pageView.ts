@@ -170,8 +170,6 @@ class FrameActor extends St.Widget {
   private _content: St.ImageContent;
   private _serial = -1;
   private _resizeTimer = 0;
-  /** A frame was dropped because this view was off screen; the texture is stale. */
-  private _missedFrame = false;
   private _onEscape: () => void;
   private _onBack: () => boolean;
   private _lastPress: [number, number, number] = [0, 0, 0];
@@ -230,14 +228,7 @@ class FrameActor extends St.Widget {
     // allocation across an overview close never reallocates, so waiting for
     // vfunc_allocate would leave it stretching the search window's page.
     this.connect('notify::mapped', () => {
-      if (!this.mapped) return;
-      this._configureSoon();
-      // Frames that arrived off screen were dropped, so the texture is as old
-      // as the last visit left it.
-      if (this._missedFrame) {
-        this._missedFrame = false;
-        this._renderer.refresh();
-      }
+      if (this.mapped) this._configureSoon();
     });
     this.connect('destroy', () => {
       if (this._resizeTimer) GLib.source_remove(this._resizeTimer);
@@ -247,13 +238,6 @@ class FrameActor extends St.Widget {
 
   /** Upload a frame; older frames arriving late are ignored. */
   showFrame(frame: Frame): void {
-    // Off screen — the other way in has the page, or neither is open. Mapping
-    // the file and uploading a texture nobody can see is pure compositor cost;
-    // mapping again asks the renderer for a current frame.
-    if (!this.mapped) {
-      this._missedFrame = true;
-      return;
-    }
     if (frame.serial <= this._serial && this._serial - frame.serial < 1 << 30) return;
     this._serial = frame.serial;
     try {
@@ -521,6 +505,7 @@ class PageView extends St.BoxLayout {
   private _loadTimer = 0;
   private _offlineBar!: St.BoxLayout;
   private _challengeBar!: St.BoxLayout;
+  private _missedFrame = false;
   private _challengeText!: St.Label;
   private _messageTimer = 0;
   private _message = '';
@@ -662,7 +647,13 @@ class PageView extends St.BoxLayout {
     this.add_child(this._offlineBar);
 
     this._listener = {
-      onFrame: frame => this._frame.showFrame(frame),
+      // Both views hear every frame; only one is on screen. Uploading for the
+      // other would double the compositor's work for a texture nobody sees, so
+      // it asks for the current frame when it comes back instead.
+      onFrame: frame => {
+        if (this.mapped) this._frame.showFrame(frame);
+        else this._missedFrame = true;
+      },
       onState: (state, detail, query) => this._onState(state, detail, query),
       onLaunched: () => this._host.dismiss(),
       onNav: nav => this._onNav(nav),
@@ -671,6 +662,11 @@ class PageView extends St.BoxLayout {
     deps.renderer.addListener(this._listener);
     this._settingsId = deps.settings.connect('changed', (_s: Gio.Settings, key: string) => this._onSettingChanged(key));
     deps.renderer.setLinkMode(linkModeOf(deps.settings));
+    this.connect('notify::mapped', () => {
+      if (!this.mapped || !this._missedFrame) return;
+      this._missedFrame = false;
+      deps.renderer.refresh();
+    });
     this.connect('destroy', () => this._onDestroy());
     // A view built while the renderer is already showing a page needs its frame.
     deps.renderer.refresh();
@@ -821,6 +817,8 @@ class PageView extends St.BoxLayout {
     if (query && this._query && query !== this._query) {
       if (this._nav.depth === 0) {
         this._pageQuery = '';
+        // A bot check for that other query is not this view's to caption.
+        this._challengeBar.visible = false;
         if (!this._notice.visible && !this._offlineBar.visible) this._showPage(false);
       }
       return;
