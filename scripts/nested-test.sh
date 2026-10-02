@@ -38,7 +38,8 @@
 # dconf database (DCONF_PROFILE → ~/.config/dconf/sds_nested), so a setting
 # changed while testing never reaches the desktop, and one changed on the
 # desktop never changes the test under you. The nested shell then loads only
-# this extension, with default settings everywhere.
+# this extension; the desktop's appearance (colour scheme, accent, themes,
+# fonts) is copied in at start, everything else is at its default.
 
 set -euo pipefail
 
@@ -241,6 +242,15 @@ if [[ $ISOLATED -eq 1 ]]; then
   # ~/.config/dconf/sds_nested, beside (not in) the desktop's `user`. The name
   # becomes part of a D-Bus object path, so it may not contain a hyphen.
   echo "user-db:sds_nested" > "$DCONF_PROFILE_FILE"
+  # An empty database means the distro's defaults (Yaru, light, on Ubuntu),
+  # and a page rendered in a theme the desktop does not use looks like a
+  # theming bug when it is not. Carry the desktop's appearance over — read from
+  # the desktop's own database, written only to the private one.
+  for key in color-scheme accent-color gtk-theme icon-theme cursor-theme \
+             font-name document-font-name monospace-font-name; do
+    value="$(env -u DCONF_PROFILE gsettings get org.gnome.desktop.interface "$key" 2>/dev/null)" || continue
+    DCONF_PROFILE="$DCONF_PROFILE_FILE" gsettings set org.gnome.desktop.interface "$key" "$value" 2>/dev/null || true
+  done
   export DCONF_PROFILE="$DCONF_PROFILE_FILE"
 fi
 if [[ $ISOLATED -eq 1 && $DO_BUILD -eq 0 && ! -d "$DATA_HOME/gnome-shell/extensions/$UUID" ]]; then
