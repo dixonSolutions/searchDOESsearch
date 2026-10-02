@@ -14,7 +14,7 @@
 #   ./scripts/nested-test.sh --headless       no window; virtual monitor
 #   ./scripts/nested-test.sh --headless --gdr start gdrd against that session
 #   ./scripts/nested-test.sh --no-build       reuse what is already installed
-#   ./scripts/nested-test.sh --isolated       install privately; leave ~/.local alone
+#   ./scripts/nested-test.sh --isolated       private install and settings; host untouched
 #
 # GNOME 50 notes (Ubuntu 26.04, Shell/mutter 50.1):
 #   * `--nested` is gone — mutter 50 dropped the X11-nested backend.
@@ -34,8 +34,11 @@
 #
 # --isolated installs the build into a private XDG_DATA_HOME under the log
 # directory instead, so the host's installed copy — and any other worktree's
-# nested session reading it — is not overwritten. The nested shell then loads
-# only this extension (no other user extensions); dconf is still shared.
+# nested session reading it — is not overwritten, and gives the session its own
+# dconf database (DCONF_PROFILE → ~/.config/dconf/sds_nested), so a setting
+# changed while testing never reaches the desktop, and one changed on the
+# desktop never changes the test under you. The nested shell then loads only
+# this extension, with default settings everywhere.
 
 set -euo pipefail
 
@@ -78,8 +81,10 @@ Usage: $(basename "$0") [options]
                       Reads GDR_TOKEN, or generates and prints one.
   --no-build          Skip compile+install; run whatever is already installed.
   --no-enable         Do not enable the extension in the nested session.
-  --isolated          Install into a private data dir, not ~/.local/share, so
-                      the host's copy and other worktrees' sessions are untouched.
+  --isolated          Install into a private data dir, not ~/.local/share, and
+                      keep settings in a private dconf database: the host's
+                      copy, its settings and other worktrees' sessions are
+                      untouched.
   --allow-launch      Let the renderer open real browsers (default: SDS_NO_LAUNCH=1).
   --debug             SDS_DEBUG=1 in the session (frame timings, scroll events).
   --verbose           Stream every shell log line, not just this extension's.
@@ -229,6 +234,15 @@ build_and_install() {
 # ── Main ────────────────────────────────────────────────────────────────────
 preflight
 DATA_HOME="$LOG_DIR/data-home"
+DCONF_PROFILE_FILE="$LOG_DIR/dconf-profile"
+if [[ $ISOLATED -eq 1 ]]; then
+  mkdir -p "$LOG_DIR"
+  # A profile naming a user database of its own: dconf keeps it in
+  # ~/.config/dconf/sds_nested, beside (not in) the desktop's `user`. The name
+  # becomes part of a D-Bus object path, so it may not contain a hyphen.
+  echo "user-db:sds_nested" > "$DCONF_PROFILE_FILE"
+  export DCONF_PROFILE="$DCONF_PROFILE_FILE"
+fi
 if [[ $ISOLATED -eq 1 && $DO_BUILD -eq 0 && ! -d "$DATA_HOME/gnome-shell/extensions/$UUID" ]]; then
   error "--isolated --no-build: nothing installed in $DATA_HOME yet — drop --no-build once."
   exit 1
@@ -274,7 +288,7 @@ SHELL_ENV=(
   "DBUS_SESSION_BUS_ADDRESS=$BUS_ADDRESS"
   "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 )
-[[ $ISOLATED -eq 1 ]] && SHELL_ENV+=("XDG_DATA_HOME=$DATA_HOME")
+[[ $ISOLATED -eq 1 ]] && SHELL_ENV+=("XDG_DATA_HOME=$DATA_HOME" "DCONF_PROFILE=$DCONF_PROFILE_FILE")
 # Keep the renderer from opening real browsers on stray clicks in a test session.
 [[ $ALLOW_LAUNCH -eq 0 ]] && SHELL_ENV+=("SDS_NO_LAUNCH=1")
 [[ $DEBUG -eq 1 ]]        && SHELL_ENV+=("SDS_DEBUG=1")
@@ -374,7 +388,9 @@ cat <<EOF
 
   Run something inside it:
     DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS' WAYLAND_DISPLAY=$WL_DISPLAY \\
-      gnome-extensions list --enabled
+      ${DCONF_PROFILE:+DCONF_PROFILE='$DCONF_PROFILE' }gnome-extensions list --enabled
+  Its settings change over that bus${DCONF_PROFILE:+ and with that DCONF_PROFILE}: dconf tells the
+  shell about a change on the bus that made it, so a host-bus gsettings is never seen.
 
   Ctrl+C stops the session (and only the processes this script started).
 EOF
