@@ -223,6 +223,13 @@ consequences follow, and both are tested in `scripts/provider-check.js`:
   its page back to the skeleton, because the frames it holds now belong to the
   other view's search.
 
+Whichever way in is leaving also drops the load it has only scheduled
+(`SearchProvider.cancelPendingSearch`, called when the overview starts hiding
+and when the window closes). The debounce outlives both, so a timer left running
+would load the terms of the view that just went away into the one that replaced
+it — which the other view reads as another query's state and answers with a
+skeleton it has nothing to replace.
+
 The frame claims the renderer's page size whenever it is mapped (not only when
 its allocation changes), because the two views are different sizes and an
 overview view keeps its allocation across closes.

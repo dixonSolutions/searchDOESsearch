@@ -188,6 +188,17 @@ export class SearchProvider {
     this._debounceId = 0;
   }
 
+  /**
+   * The view this provider feeds has left the screen. What it loaded stays
+   * loaded — coming back to the same terms still finds them showing — but a
+   * load that has only been scheduled is dropped: the other way in drives the
+   * same renderer, and a timer left running here would replace the page the
+   * user is now looking at with this query's.
+   */
+  cancelPendingSearch(): void {
+    this._cancelDebounce();
+  }
+
   destroy(): void {
     this._cancelDebounce();
     this._query = '';

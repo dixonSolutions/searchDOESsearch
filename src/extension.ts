@@ -22,6 +22,7 @@ export default class SearchDoesSearchExtension extends Extension {
   private _settings: Gio.Settings | null = null;
   private _settingsChangedId = 0;
   private _overviewShowingId = 0;
+  private _overviewHidingId = 0;
   private _overviewHiddenId = 0;
 
   private _readOptions(): Partial<SearchProviderOptions> {
@@ -104,6 +105,11 @@ export default class SearchDoesSearchExtension extends Extension {
       this._renderer?.prewarm();
       this._renderer?.setActive(true);
     });
+    // Terms the overview was still settling belong to a screen that is going
+    // away, and the window the shortcut opens over it drives the same renderer:
+    // a load left scheduled here would land in its page. 'hiding' rather than
+    // 'hidden', because the debounce is shorter than the close animation.
+    this._overviewHidingId = Main.overview.connect('hiding', () => this._provider?.cancelPendingSearch());
     // A closed overview still had a live page exporting every repaint into it —
     // an animating ad kept a full-window readback running for an audience of
     // nobody. The page stays loaded; only the exporting stops.
@@ -122,6 +128,10 @@ export default class SearchDoesSearchExtension extends Extension {
     if (this._overviewShowingId) {
       Main.overview.disconnect(this._overviewShowingId);
       this._overviewShowingId = 0;
+    }
+    if (this._overviewHidingId) {
+      Main.overview.disconnect(this._overviewHidingId);
+      this._overviewHidingId = 0;
     }
     if (this._overviewHiddenId) {
       Main.overview.disconnect(this._overviewHiddenId);

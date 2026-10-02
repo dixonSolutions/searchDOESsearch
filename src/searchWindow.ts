@@ -367,6 +367,7 @@ export class SearchWindow {
     this._open = false;
     this._cancellable?.cancel();
     this._cancellable = null;
+    this._provider.cancelPendingSearch();
     if (this._grab) Main.popModal(this._grab);
     this._grab = null;
     // The overview may be the one taking over; it turns the renderer back on.
