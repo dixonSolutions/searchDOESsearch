@@ -109,6 +109,8 @@ const MESSAGE_MS = 2500;
  * refused D-Bus call hid itself during development.
  */
 const LOAD_TIMEOUT_MS = 15000;
+/** The rendered results' column (pageCss in the renderer); the skeleton matches it. */
+const SKELETON_COLUMN_MAX = 880;
 /** Dim text, done with actor opacity: a hard-coded grey breaks on a user theme. */
 const DIM = 160;
 
@@ -362,7 +364,7 @@ class Skeleton extends St.BoxLayout {
   private _pulse: St.BoxLayout;
 
   constructor() {
-    super({style_class: 'sds-skeleton', x_expand: true, y_expand: true, visible: false});
+    super({style_class: 'sds-skeleton', x_expand: true, y_expand: true, visible: false, clip_to_allocation: true});
     // One animated actor, not twenty: the pulse is on the column as a whole.
     this._pulse = new St.BoxLayout({
       style_class: 'sds-skeleton-column',
@@ -372,6 +374,20 @@ class Skeleton extends St.BoxLayout {
     });
     for (let i = 0; i < 5; i++) this._pulse.add_child(this._row());
     this.add_child(this._pulse);
+  }
+
+  /**
+   * The column is the rendered results' 880px wide, or the whole width when
+   * there is less: a centred child keeps its natural width even when that is
+   * wider than its parent, which in the floating search window spilled the
+   * skeleton out of the card.
+   */
+  override vfunc_allocate(box: Clutter.ActorBox): void {
+    this.set_allocation(box);
+    const content = this.get_theme_node().get_content_box(box);
+    const width = Math.min(SKELETON_COLUMN_MAX, content.get_width());
+    const x1 = content.x1 + Math.round((content.get_width() - width) / 2);
+    this._pulse.allocate(new Clutter.ActorBox({x1, y1: content.y1, x2: x1 + width, y2: content.y2}));
   }
 
   /** Title, url, and two lines of snippet — the shape of one result. */
@@ -699,6 +715,15 @@ class PageView extends St.BoxLayout {
     }
     if (!this._query) return;
     launch(engineFor(this._engineId).browser(this._query), this._host);
+  }
+
+  /**
+   * Resize the page area: the floating search window is resized from its
+   * corner. The frame's new allocation re-sizes the renderer's page.
+   */
+  setPageHeight(height: number): void {
+    this._frame.set_height(height);
+    this._skeleton.set_height(height);
   }
 
   /** Give the page the keyboard, from an entry above it. */

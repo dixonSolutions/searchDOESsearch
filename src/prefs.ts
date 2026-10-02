@@ -25,10 +25,15 @@ const LINK_MODES: Choice[] = [
 ];
 const VISIBILITY: Choice[] = [
   {value: 'always', label: 'Every search'},
-  {value: 'no-other-results', label: 'Only when nothing else matched'},
+  {value: 'no-other-results', label: 'As a fallback'},
   {value: 'never', label: 'Never'},
 ];
+const WINDOW_STYLES: Choice[] = [
+  {value: 'full', label: 'Full screen'},
+  {value: 'floating', label: 'Floating window'},
+];
 const SHORTCUT_KEY = 'search-window-shortcut';
+const GEOMETRY_KEYS = ['search-window-position', 'search-window-size'];
 const PLACEMENT: Choice[] = [
   {value: 'default', label: 'Where GNOME puts it'},
   {value: 'top-when-alone', label: 'First when nothing else matched'},
@@ -80,6 +85,27 @@ function shortcutRow(settings: Gio.Settings): Adw.ActionRow {
   sync();
   settings.connect(`changed::${SHORTCUT_KEY}`, sync);
   row.connect('activated', () => recordShortcut(row, settings));
+  return row;
+}
+
+/** Forget where the floating window was left and how big it was. */
+function geometryRow(settings: Gio.Settings, windowRow: Adw.SwitchRow): Adw.ActionRow {
+  const row = new Adw.ActionRow({
+    title: 'Floating window size and position',
+    subtitle: 'Kept from the last time you moved or resized it',
+  });
+  const reset = new Gtk.Button({label: 'Reset', valign: Gtk.Align.CENTER});
+  reset.connect('clicked', () => GEOMETRY_KEYS.forEach(key => settings.reset(key)));
+  row.add_suffix(reset);
+  const sync = (): void => {
+    row.visible = settings.get_string('search-window-style') === 'floating';
+    row.sensitive = windowRow.active;
+    reset.sensitive = GEOMETRY_KEYS.some(key => settings.get_user_value(key) !== null);
+  };
+  sync();
+  for (const key of ['search-window-style', ...GEOMETRY_KEYS])
+    settings.connect(`changed::${key}`, sync);
+  windowRow.connect('notify::active', sync);
   return row;
 }
 
@@ -148,8 +174,16 @@ export default class SearchDoesSearchPreferences extends ExtensionPreferences {
     const shortcut = shortcutRow(settings);
     windowRow.bind_property('active', shortcut, 'sensitive', GObject.BindingFlags.SYNC_CREATE);
     ways.add(shortcut);
-    ways.add(choiceRow(settings, 'section-visibility', 'In the overview\'s search',
-      'When the results page shows up among the overview\'s search results', VISIBILITY));
+    // Short subtitles: a combo row's selected value is what gives way to them.
+    const style = choiceRow(settings, 'search-window-style', 'Style',
+      'Floating can be moved and resized', WINDOW_STYLES);
+    windowRow.bind_property('active', style, 'sensitive', GObject.BindingFlags.SYNC_CREATE);
+    ways.add(style);
+    ways.add(geometryRow(settings, windowRow));
+    // The selected value is cut at about twenty characters, so the choice is
+    // short and the subtitle says what it means.
+    ways.add(choiceRow(settings, 'section-visibility', 'In the overview',
+      'As a fallback: only when nothing else matches', VISIBILITY));
     page.add(ways);
 
     // --- the page itself ---
@@ -168,7 +202,7 @@ export default class SearchDoesSearchPreferences extends ExtensionPreferences {
 
     // --- where it sits in the overview ---
     const placement = new Adw.PreferencesGroup({
-      title: 'In the overview',
+      title: 'Overview placement',
       description: 'Your browser\'s own "search the web" entry answers every query, so it does not count ' +
         'as something else having matched.',
     });

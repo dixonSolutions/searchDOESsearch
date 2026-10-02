@@ -247,11 +247,20 @@ leaves it installed for everyone else.
 ### The search window
 
 Press **Super+Shift+S** anywhere — over a full-screen app, from the overview —
-and a frosted search box drops in over what you were doing. Type, and the same
+and a search box drops in over what you were doing. Type, and the same
 results page grows under it. **Escape**, a click outside it, or the shortcut
 again closes it; **Enter** hands the search to your browser; **Down** or **Tab**
 moves the keyboard into the page. Reopening it keeps your last search, selected,
 so the page is already there and typing replaces it.
+
+Two styles:
+
+- **Full screen** (the default) frosts the desktop and centres a large card on it.
+- **Floating window** is a smaller card over a desktop left as it is. Drag it by
+  its edge or the handle on top, resize it from the bottom-right corner; it opens
+  where you left it, at the size you left it, pulled back on screen if that
+  monitor is gone. A click outside it still closes it, as Escape does: the Shell
+  only gives the keyboard to its own widgets while they hold it.
 
 ### Settings
 
@@ -261,7 +270,9 @@ All in Extension Settings:
 |---|---|---|
 | Search window | on / off | on |
 | Shortcut | any chord with Super, Ctrl or Alt; Backspace in the recorder removes it | Super+Shift+S |
-| In the overview's search | every search / only when nothing else matched / never | only when nothing else matched |
+| Style | full screen / floating window | full screen |
+| Floating window size and position | remembered; Reset forgets them | centred |
+| In the overview | every search / as a fallback (only when nothing else matched) / never | as a fallback |
 | Engine | DuckDuckGo / Google | DuckDuckGo |
 | Open links | in place / in your browser | in place |
 | Put them first (overview) | always / when nothing else matched / where GNOME puts it | when nothing else matched |

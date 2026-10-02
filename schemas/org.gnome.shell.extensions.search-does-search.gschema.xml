@@ -102,5 +102,38 @@
       </description>
     </key>
 
+    <key name="search-window-style" type="s">
+      <choices>
+        <choice value="full"/>
+        <choice value="floating"/>
+      </choices>
+      <default>'full'</default>
+      <summary>How the search window looks</summary>
+      <description>
+        'full' frosts the whole screen and centres a large card on it. 'floating'
+        is a smaller card over a desktop left as it is, which can be dragged by its
+        edge and resized from its corner; where it was left and how big it was are
+        remembered.
+      </description>
+    </key>
+
+    <key name="search-window-position" type="(ii)">
+      <default>(-1, -1)</default>
+      <summary>Where the floating search window was left</summary>
+      <description>
+        Top-left corner in logical pixels of the whole desktop. (-1, -1) centres it
+        on the monitor in use. A position no longer on any monitor is ignored.
+      </description>
+    </key>
+
+    <key name="search-window-size" type="(ii)">
+      <default>(-1, -1)</default>
+      <summary>How big the floating search window was left</summary>
+      <description>
+        Width of the card and height of the page in it, in logical pixels.
+        (-1, -1) is the default size. Clamped to the monitor on every open.
+      </description>
+    </key>
+
   </schema>
 </schemalist>

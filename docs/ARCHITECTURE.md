@@ -192,7 +192,11 @@ Schema `org.gnome.shell.extensions.search-does-search`:
 `section-visibility` (always | no-other-results | never), `section-placement`
 (top | top-when-alone | default), `search-window` (boolean) and
 `search-window-shortcut` (an accelerator list the window manager reads itself,
-via `Main.wm.addKeybinding`). The former `searxng-instance`, `panel-*`,
+via `Main.wm.addKeybinding`), `search-window-style` (full | floating), and
+`search-window-position` / `search-window-size` (both `(ii)`, `(-1, -1)` meaning
+"default") for where the floating window was left: stage coordinates, and the
+card's width with the page's height, clamped to the monitor's work area on every
+open. The former `searxng-instance`, `panel-*`,
 `max-results`, `search-engine` and `browser-command` keys are gone.
 
 ### Two ways in, one renderer
@@ -218,7 +222,13 @@ Turning the overview off (`never`) leaves the provider registered but answering
 nothing, so switching it back on does not reshuffle the Shell's section order.
 The window grabs the keyboard with `Main.pushModal` in `POPUP` action mode; its
 keybinding is registered for `NORMAL | OVERVIEW | POPUP`, so the same chord
-closes it, and the handler refuses to open over someone else's popup.
+closes it, and the handler refuses to open over someone else's popup. The
+floating style is modal too — Shell chrome only gets key focus under a grab — so
+its backdrop is transparent rather than absent, and still closes it on a click.
+A drag takes a second, nested `global.stage.grab()` on the card and reads motion
+in `captured-event`, so the page under the pointer never sees it. Cursors are
+per-actor on Shell 50 (`set_cursor_type`) and global before it
+(`global.display.set_cursor`); `setCursor()` in searchWindow.ts picks.
 
 ### Reaching into the Shell's search results
 

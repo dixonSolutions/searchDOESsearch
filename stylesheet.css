@@ -138,8 +138,8 @@
   background-color: rgba(0, 0, 0, 0.18);
 }
 .sds-window {
-  padding: 10px;
-  spacing: 10px;
+  /* The padding lives on the box inside, so the resize grip (a sibling of the
+     box) can sit in the margin under the page rather than over its corner. */
   border-radius: 22px;
   color: #f6f5f4;
   background-color: rgba(28, 28, 32, 0.66);
@@ -167,6 +167,34 @@
   padding: 0 4px;
   color: rgba(246, 245, 244, 0.75);
 }
+.sds-window-box { padding: 10px; spacing: 10px; }
+
+/* Floating: nothing frosts the desktop behind it, so the card carries its own
+   opacity, and a tighter shadow says "window" rather than "sheet". */
+.sds-window.sds-window-floating {
+  border-radius: 16px;
+  background-color: rgba(30, 30, 34, 0.94);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.sds-window-floating .sds-window-box { padding: 6px 10px 16px 10px; spacing: 8px; }
+/* The handle on top says "drag me"; the card's whole edge works as well. */
+.sds-window-handle {
+  width: 40px;
+  height: 5px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.22);
+}
+/* Bottom-right resize grip, drawn in code; these set its size and colour. */
+.sds-window-grip {
+  width: 12px;
+  height: 12px;
+  margin: 0 4px 3px 0;
+  color: rgba(255, 255, 255, 0.45);
+}
+.sds-window-grip:hover {
+  color: -st-accent-color;
+}
+
 /* The page view sits flush in the card, under the entry. */
 .sds-window .sds-page { padding: 0 2px 2px 2px; }
 .sds-window .sds-offline-bar { background-color: rgba(255, 255, 255, 0.08); }
