@@ -450,6 +450,8 @@ class PageView extends St.BoxLayout {
   private _spinnerTimer = 0;
   private _loadTimer = 0;
   private _offlineBar!: St.BoxLayout;
+  private _challengeBar!: St.BoxLayout;
+  private _challengeText!: St.Label;
   private _messageTimer = 0;
   private _message = '';
   private _open: St.Button;
@@ -524,6 +526,23 @@ class PageView extends St.BoxLayout {
       this._hint.visible = !this._focusHint.visible && this.has_style_pseudo_class('selected');
     });
 
+    // --- bot check ---
+    // Above the page, because it is the caption for it: underneath, it would be
+    // read after the thing it explains. The text names the engine; see
+    // _showChallenge.
+    this._challengeBar = new St.BoxLayout({style_class: 'sds-challenge-bar', x_expand: true, visible: false});
+    this._challengeText = new St.Label({
+      style_class: 'sds-challenge-text',
+      x_expand: true,
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    this._challengeText.clutter_text.line_wrap = true;
+    this._challengeBar.add_child(this._challengeText);
+    const challengeEscape = new St.Button({style_class: 'button', label: 'Open in browser', can_focus: true});
+    challengeEscape.connect('clicked', () => this.activate());
+    this._challengeBar.add_child(challengeEscape);
+    this.add_child(this._challengeBar);
+
     // --- the page ---
     this._frame = new FrameActor(deps.renderer, () => this._focusEntry(), () => this._goBack());
     this._frame.connect('key-focus-in', () => {
@@ -539,7 +558,7 @@ class PageView extends St.BoxLayout {
     this._skeleton.set_height(pageHeight());
     this.add_child(this._skeleton);
 
-    // --- notice (blocked engine / load error) ---
+    // --- notice (load error) ---
     this._notice = new St.BoxLayout({style_class: 'sds-notice', orientation: Clutter.Orientation.VERTICAL, x_expand: true, x_align: Clutter.ActorAlign.CENTER, visible: false});
     this._noticeTitle = new St.Label({style_class: 'sds-notice-title', x_align: Clutter.ActorAlign.CENTER});
     this._noticeBody = new St.Label({style_class: 'sds-notice-body', x_align: Clutter.ActorAlign.CENTER, x_expand: true});
@@ -563,7 +582,7 @@ class PageView extends St.BoxLayout {
     this._offlineBar = new St.BoxLayout({style_class: 'sds-offline-bar', x_expand: true, visible: false});
     this._offlineBar.add_child(new St.Label({
       style_class: 'sds-offline-text',
-      text: 'Unable To Query (internet broken or not connected)',
+      text: 'No internet connection. The search runs again when you are back online.',
       x_expand: true,
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
@@ -598,7 +617,8 @@ class PageView extends St.BoxLayout {
     if (query === this._query) return;
     this._query = query;
     this.metaInfo.name = query;
-    if (this._nav.depth === 0 && !this._notice.visible && !this._offlineBar.visible) {
+    if (this._nav.depth === 0 && !this._notice.visible && !this._offlineBar.visible
+        && !this._challengeBar.visible) {
       this._showPage(query !== '' && query === this._pageQuery);
     }
     this._updateStatus();
@@ -723,13 +743,14 @@ class PageView extends St.BoxLayout {
       return;
     }
     this._offlineBar.visible = false;
-    if (state === 'blocked') {
-      this._showNotice(`${engine.label} is refusing this network`,
-        `${engine.label} answered with its "unusual traffic" check instead of results. That is decided by ` +
-        'the IP address (VPN exits are often flagged) and will not be worked around here.',
-        [['Use DuckDuckGo', () => this._deps.settings.set_string('engine', 'duckduckgo')],
-          ['Open in browser', () => this.activate()]]);
-    } else if (state === 'error' && this._nav.depth > 0) {
+    if (state === 'challenge') {
+      // Not a notice: a notice replaces the page, and the page is the thing the
+      // user has to answer. It stays, and stays interactive.
+      this._showChallenge(engine.label);
+      return;
+    }
+    this._challengeBar.visible = false;
+    if (state === 'error' && this._nav.depth > 0) {
       // A followed page failed, not the engine: offer the way back, not a
       // reload of a results page the user is not looking at.
       const host = hostOf(this._nav.uri) || 'that page';
@@ -775,7 +796,7 @@ class PageView extends St.BoxLayout {
       this._title.opacity = 255;
     } else {
       const engine = engineFor(this._engineId);
-      const suffix = {loading: '', ready: '', blocked: ' · blocked', error: ' · failed', offline: ' · offline'}[this._state] ?? '';
+      const suffix = {loading: '', ready: '', challenge: ' · bot check', error: ' · failed', offline: ' · offline'}[this._state] ?? '';
       this._title.clutter_text.set_markup(esc(`${engine.label}${suffix}`));
       this._title.opacity = DIM;
     }
@@ -835,13 +856,30 @@ class PageView extends St.BoxLayout {
   /** No page, no skeleton, no buttons: one row saying why there is nothing. */
   private _showOffline(): void {
     this._notice.visible = false;
+    this._challengeBar.visible = false;
     this._frame.visible = false;
     this._skeleton.stop();
     this._offlineBar.visible = true;
   }
 
+  /**
+   * A bot check is neither an error nor a dead end, so it does not get an error
+   * card: the page is left on screen and interactive, and the bar above it says
+   * what it is. Without the bar an unstyled grid of photographs reads as the
+   * extension having broken — which is exactly how it did read.
+   */
+  private _showChallenge(engineLabel: string): void {
+    this._challengeText.text = `${engineLabel} wants to check that you are not a robot. Answer it below to see your results.`;
+    this._notice.visible = false;
+    this._offlineBar.visible = false;
+    this._skeleton.stop();
+    this._frame.visible = true;
+    this._challengeBar.visible = true;
+  }
+
   private _showNotice(title: string, body: string, buttons: Array<[string, () => void]>): void {
     this._offlineBar.visible = false;
+    this._challengeBar.visible = false;
     this._noticeTitle.text = title;
     this._noticeBody.text = body;
     this._noticeButtons.remove_all_children();

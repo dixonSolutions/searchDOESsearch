@@ -78,8 +78,13 @@ export const BUS_NAME = 'io.github.searchdoessearch.Renderer';
 export const OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 const DEBUG = !!GLib.getenv('SDS_DEBUG');
 const DUMP_HTML = GLib.getenv('SDS_DUMP_HTML') || '';
-// A browser UA: DuckDuckGo's HTML endpoint serves a plain, JS-free SERP to it.
-const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0';
+// No user agent is set: the page is rendered by WebKit, and WebKit's own UA says
+// so. Google runs a script on the results page that checks the engine against
+// the UA, and a WebKit engine claiming to be Firefox or Chrome is sent to /sorry
+// ("unusual traffic") on the first search, every time, from any network; the
+// same engine saying it is WebKit gets results. Claiming another browser is the
+// one thing here that looks like a scraper. WebKit's default also stays true as
+// WebKit updates, and keeps its site-specific quirks for the sites that need them.
 const DEFAULT_WIDTH = 800;
 const DEFAULT_HEIGHT = 600;
 // Repaints arrive in bursts; wait this long for the burst to settle before
@@ -103,6 +108,17 @@ const FRAME_SETTLE_MS = 150;
 // it is coalesced to the newest position at this rate.
 const MOTION_INTERVAL_MS = 24;
 const IDLE_EXIT_S = 15 * 60;
+// An engine that builds its results with JavaScript finishes loading before it
+// has anything to show. The page is polled for the results — or for the bot
+// check — and after this long it is shown as it stands, because a search with
+// no results, or a page shape that changed under us, must not strand the view
+// on the skeleton forever.
+const SETTLE_TIMEOUT_MS = 2500;
+const SETTLE_POLL_MS = 80;
+// DuckDuckGo's bot check, by its markup: its no-JS challenge posts to
+// /anomaly.js, and the class is what its modal is built from. Google's check
+// has a URL of its own (/sorry) and is recognised by that instead.
+const CHALLENGE_SELECTOR = '.anomaly-modal, #challenge-form, form[action*="anomaly.js"]';
 
 const enc = encodeURIComponent;
 const now = () => GLib.get_monotonic_time() / 1000;
@@ -182,18 +198,33 @@ export const INTERFACE_XML = `
 
 /**
  * The engine whose page is rendered. `hosts` decides which programmatic loads
- * may stay inside the view (the engine's own redirects); `blocked` names the
- * interstitial the renderer refuses to fight — it reports it instead.
+ * may stay inside the view (the engine's own redirects); `ready` is the results
+ * themselves, for an engine whose page is built after the load finishes; and
+ * `challenge` recognises the bot check the engine puts in front of results on a
+ * flagged network. A challenge is not a wall — it is a page with a form, meant
+ * for the person sitting in front of it — so the renderer shows it and gets out
+ * of the way rather than reporting a dead end.
  */
 const ENGINES = {
   duckduckgo: {
     label: 'DuckDuckGo',
-    serp: q => `https://html.duckduckgo.com/html/?q=${enc(q)}`,
+    // The JavaScript SERP, not html.duckduckgo.com. The no-JS endpoint is the
+    // one scrapers use and is rate-limited to match: it starts answering 202
+    // with a challenge within a handful of searches, and lite/ shares the
+    // budget. This page costs more to render and is worth it.
+    serp: q => `https://duckduckgo.com/?q=${enc(q)}`,
     hosts: /(^|\.)duckduckgo\.com$/i,
     // WebKit URL patterns: the engine's own stylesheet is scoped to these, so a
     // page the user followed renders as itself rather than as a mangled SERP.
-    match: ['*://*.duckduckgo.com/*'],
-    blocked: () => null,
+    match: ['*://duckduckgo.com/*', '*://*.duckduckgo.com/*'],
+    // The section, not any "mainline": the page's own HTML ships an empty
+    // div[data-testid="mainline"] that is there seconds before a single result,
+    // and the section is built with them — on a search with no results too.
+    ready: 'section[data-testid="mainline"], article[data-testid="result"]',
+    // The no-JS endpoint serves its challenge at the URL the results would have
+    // had, so only the status separates them; a followed redirect to
+    // /anomaly.js is the same check arriving by another road.
+    challenge: (uri, status) => status === 202 || pathOf(uri) === '/anomaly.js',
   },
   google: {
     label: 'Google',
@@ -202,8 +233,19 @@ const ENGINES = {
     // serp() always loads www.google.com; a country-domain redirect renders
     // unstyled rather than mangled, which is the safe way round.
     match: ['*://*.google.com/*'],
+    // The results grid. /search first answers with a script-only page ("click
+    // here if you are not redirected") that navigates itself to the real one —
+    // or to /sorry — so the load finishing means nothing on its own, and saying
+    // `ready` then flashes a blank page. Present on a page with no results too.
+    ready: '#rcnt',
+    // Google picks its palette on the server, from the client hint Chrome sends;
+    // prefers-color-scheme alone does not move it. Without the hint a dark
+    // desktop gets the light page, and the theme's background painted under it
+    // leaves Google's dark text on a dark ground — the weather card unreadable.
+    // Unquoted: Google ignores the structured-header form, "dark".
+    headers: dark => ({'Sec-CH-Prefers-Color-Scheme': dark ? 'dark' : 'light'}),
     // "Our systems have detected unusual traffic from your computer network."
-    blocked: uri => (/\/sorry(\/|$)/.test(pathOf(uri)) ? 'unusual-traffic' : null),
+    challenge: uri => /\/sorry(\/|$)/.test(pathOf(uri)),
   },
 };
 
@@ -318,6 +360,18 @@ function systemPrefersDark() {
   }
 }
 
+/**
+ * Whether a theme colour is dark. Asked of the background the page is painted
+ * on, not of the desktop's colour-scheme key: a dark GTK theme with the key left
+ * at "default" still paints a dark page, and that is what the engine's palette
+ * has to match.
+ */
+function isDark(color) {
+  const rgba = new Gdk.RGBA();
+  if (!rgba.parse(color)) return false;
+  return 0.2126 * rgba.red + 0.7152 * rgba.green + 0.0722 * rgba.blue < 0.5;
+}
+
 /** Colours and font of the GTK theme currently applied to `widget`. */
 function readTheme(widget) {
   const ctx = widget.get_style_context();
@@ -364,61 +418,85 @@ function pageCss(engineId, t) {
   const hover = `color-mix(in srgb, ${t.text} 6%, transparent)`;
   if (engineId === 'google') {
     // Google's SERP is JS-built and its class names churn; anchor on the stable
-    // ids/roles it has kept for years.
+    // ids/roles it has kept for years. Its own colours are left alone: the
+    // palette it serves already matches the theme (see `headers`), and widgets
+    // like the weather card set their own text colour on their own ground.
     return common + `
   #searchform, #sfcnt, #tsf, form[role="search"], header, #top_nav, #hdtb, #appbar,
-  #gb, #gbar, #footcnt, #foot, #fbar, #botstuff, #bottomads, #tads,
+  #gb, #gbar, #footcnt, #foot, #fbar, #botstuff, #bottomads, #tads, #sfooter,
   #sbfrm_l, .sfbg, .minidiv, #searchbox, #before-appbar, #easter-egg, #lfootercc,
-  #tvcap, .commercial-unit-desktop-top, #rhs, [aria-label="Search"] { display: none !important; }
-  #main, #cnt, #rcnt, #center_col, #res, #search, #rso {
-    margin: 0 !important; padding: 0 !important; max-width: none !important; width: auto !important;
+  #tvcap, .commercial-unit-desktop-top, #rhs, [aria-label="Search"],
+  /* The search box's wrapper keeps its 70px when only the box is hidden, and the
+     All-Images-News row is a navigation landmark holding a list — the only one
+     outside the results grid. Its underline is laid out apart from it, as an
+     empty div alone in a span, and would otherwise be left drawn across the
+     first result. */
+  body > span:has(#searchform), #cnt > div:not(#rcnt):has([role="navigation"] [role="list"]),
+  #cnt > div:not(#rcnt) > span:only-child > div:only-child:empty {
+    display: none !important;
   }
   /* Centred: the frame is as wide as the overview card, and a column pinned to
-     its left edge reads as a mistake. 880px is 70-80 characters at 11pt — the
-     readable band — and leaves even margins instead of 40% dead space. */
-  #rso { padding: 10px 20px 24px 20px !important; max-width: 880px; margin: 0 auto !important; }
-  #rso > div, .g { padding: 8px 10px !important; margin: 0 0 2px 0 !important; border-radius: 8px !important; }
+     its left edge reads as a mistake. The results grid puts its 652px column
+     84px in; shifting the grid by the difference centres the column without
+     touching Google's own layout, and on a frame too narrow for that it stays
+     where Google put it. */
+  #rcnt { margin-left: max(0px, calc(50% - 410px)) !important; }
+  #rso > div, .g { padding: 8px 10px !important; margin: 0 0 2px -10px !important; border-radius: 8px !important; }
   #rso > div:hover, .g:hover { background: ${hover} !important; }
   h3 { font-size: 1.05em !important; line-height: 1.35 !important; color: ${t.link} !important; }
   cite { color: ${t.dim} !important; font-size: 0.85em !important; }
   `;
   }
+  // DuckDuckGo's class names are hashed and change with every deploy, so this
+  // names only the data-testids, which have not moved in years. That is also
+  // why the snippet has no rule of its own: it carries no testid, and it does
+  // not need one — it inherits the theme's colour and font from `common` along
+  // with everything else inside the result.
   return common + `
-  #header, .header, .header--html, .header__form, .header__logo-wrap,
-  .search--header, form.search, .search__input, .search__button,
-  .feedback-btn, .nav-link, .site-wrapper-border, #bottom_spacing2,
-  .frm__select, .result--ad, .result__icon, .result--sep, .results--ads,
-  .msg--spelling, .zci-wrapper, .no-results--error, .result__extras__url > span,
-  form[action="/html/"] > input[type="submit"], .results_links_deep .result__check,
-  #links_wrapper > form > .nav-link {
+  [data-testid="header"], [data-testid="header-logo"], [data-testid="search-form"],
+  [data-testid="duckbar"], [data-testid="sidebar"], [data-testid="privacy-reminder"],
+  [data-testid="feedback-prompt"], [data-testid="floating-feedback-prompt"],
+  [data-testid="ad"],
+  /* The region / safe-search / time row: its own classes are hashed, but it is
+     the only nav inside the results vertical — the All-Images-Videos bar above
+     it is the duckbar, hidden by name. */
+  [data-testid="web-vertical"] nav,
+  /* Legacy names DuckDuckGo has kept through the React rewrite. */
+  .header-wrap, .welcome-wrap, .nav-menu--slideout, .serp__top-right, .serp__bottom-right {
     display: none !important;
   }
-  .body--html { background: ${t.bg} !important; }
-  .serp__results, #links, .results, .site-wrapper, .serp__top-right, .serp {
+  [data-testid="mainline"], [data-testid="web-vertical"] {
     width: auto !important; max-width: none !important; min-width: 0 !important;
-    padding: 0 !important; margin: 0 !important;
+    margin: 0 !important; padding: 0 !important;
   }
+  /* The results column is one item of a flex row whose other item is the
+     sidebar, hidden above; left at its own 672px it sits at the left edge, and
+     the list centred inside it is centred in the wrong box. */
+  section[data-testid="mainline"] { flex: 1 1 auto !important; }
+  /* The desktop layout pins 980px on the page itself, so a frame any narrower —
+     or exactly that wide, less a scrollbar — scrolls sideways. */
+  html, body, .site-wrapper, .serp__results, #links_wrapper { min-width: 0 !important; }
   /* Centred: the frame is as wide as the overview card, and a column pinned to
      its left edge reads as a mistake. 880px is 70-80 characters at 11pt — the
      readable band — and leaves even margins instead of 40% dead space. */
-  #links { padding: 10px 20px 24px 20px !important; max-width: 880px; margin: 0 auto !important; }
-  .results_links, .results_links_deep, .web-result { margin: 0 !important; padding: 0 !important; }
-  .result {
-    padding: 8px 12px 9px 12px !important; margin: 0 0 4px 0 !important;
+  ol.react-results--main {
+    list-style: none !important; max-width: 880px;
+    padding: 10px 20px 24px 20px !important; margin: 0 auto !important;
+  }
+  ol.react-results--main > li { margin: 0 0 2px 0 !important; padding: 0 !important; }
+  article[data-testid="result"] {
+    padding: 8px 10px !important; margin: 0 !important;
     border: none !important; border-radius: 8px !important;
   }
-  .result:hover { background: ${hover} !important; }
-  .links_main, .result__body { padding-left: 0 !important; margin: 0 !important; }
-  .result__title { font-size: 1.05em !important; line-height: 1.35 !important; margin: 0 !important; }
-  .result__a, .result__a:visited { color: ${t.link} !important; text-decoration: none !important; }
-  .result__a:hover { text-decoration: underline !important; }
-  .result__snippet, .result__snippet b {
-    color: ${t.text} !important; opacity: 0.85; font-size: 0.95em !important; line-height: 1.45 !important;
-    margin: 2px 0 0 0 !important; text-decoration: none !important;
+  article[data-testid="result"]:hover { background: ${hover} !important; }
+  [data-testid="result-title-a"], [data-testid="result-title-a"] span {
+    color: ${t.link} !important; text-decoration: none !important;
+    font-size: 1.05em !important; line-height: 1.35 !important;
   }
-  .result__extras, .result__extras__url { margin: 2px 0 0 0 !important; }
-  .result__url, .result__url:hover { color: ${t.dim} !important; font-size: 0.85em !important; text-decoration: none !important; }
-  .result__snippet b, .result__snippet strong { font-weight: 600 !important; opacity: 1; }
+  [data-testid="result-title-a"]:hover span { text-decoration: underline !important; }
+  [data-testid="result-extras-url-link"], [data-testid="result-extras-url-link"] span {
+    color: ${t.dim} !important; font-size: 0.85em !important; text-decoration: none !important;
+  }
   `;
 }
 
@@ -464,6 +542,18 @@ class Renderer {
     this._height = DEFAULT_HEIGHT;
     this._scale = 1;
     this._serial = 0;
+    // The status of the main document. DuckDuckGo's no-JS challenge is a 202 at
+    // the URL the results would have had, so the URL alone cannot tell the two
+    // apart. Reset per load; 0 means "not known yet".
+    this._lastStatus = 0;
+    // Bumped on every load, so a poll belonging to a search the user has
+    // already moved past can tell, and stop.
+    this._loadSerial = 0;
+    // The load `ready` was last reported for; see _settle.
+    this._readySerial = -1;
+    // Whether the results page was asked for in the dark palette; see
+    // _matchServedPalette. Unset until the first search.
+    this._servedDark = undefined;
     // Whether the overview is showing the page; see SetActive.
     this._active = true;
     // Smoothed cost of one export, in ms; paces _scheduleFrame.
@@ -472,7 +562,7 @@ class Renderer {
     this._settleTimer = 0;
     this._lastFrameAt = 0;
     this._frames = new FrameFiles();
-    this._blocked = false;
+    this._challenge = false;
     this._loading = false;
     // Contained browsing: links followed since the results page. 0 means the
     // results page itself, which is what the Shell shows no back arrow for.
@@ -494,7 +584,6 @@ class Renderer {
     this._ucm = new WebKit2.UserContentManager();
     this._web = new WebKit2.WebView({user_content_manager: this._ucm, web_context: this._buildWebContext()});
     const settings = this._web.get_settings();
-    settings.set_user_agent(USER_AGENT);
     settings.set_enable_javascript(true);
     settings.set_enable_developer_extras(false);
     // Pixels are read back through cairo; GPU compositing would only add a copy.
@@ -561,9 +650,13 @@ class Renderer {
       this._iface.connect('changed::color-scheme', () => {
         Gtk.Settings.get_default().gtk_application_prefer_dark_theme = systemPrefersDark();
         this._applyPageStyle();
+        this._matchServedPalette();
       });
     } catch { /* no desktop schema: GTK's own theme setting decides */ }
-    this.window.get_style_context().connect('changed', () => this._applyPageStyle());
+    this.window.get_style_context().connect('changed', () => {
+      this._applyPageStyle();
+      this._matchServedPalette();
+    });
     Gtk.Settings.get_default().connect('notify::gtk-font-name', () => this._applyPageStyle());
 
     this._web.connect('notify::title', () => {
@@ -573,7 +666,7 @@ class Renderer {
     // The name lookup for the engine is on the critical path of the first
     // search; start it now, while the overview is still animating open.
     try {
-      this._web.get_context().prefetch_dns('html.duckduckgo.com');
+      this._web.get_context().prefetch_dns('duckduckgo.com');
       this._web.get_context().prefetch_dns('www.google.com');
     } catch { /* older WebKit: one DNS lookup slower, nothing else */ }
 
@@ -597,6 +690,14 @@ class Renderer {
     const cookies = manager.get_cookie_manager();
     cookies.set_persistent_storage(GLib.build_filenamev([dataDir, 'cookies.sqlite']), WebKit2.CookiePersistentStorage.SQLITE);
     cookies.set_accept_policy(WebKit2.CookieAcceptPolicy.NO_THIRD_PARTY);
+    // Intelligent Tracking Prevention forgets a site the user never clicks on,
+    // and from its point of view that is exactly what this view does: it loads
+    // a results page, reads the pixels, and never interacts. It would evict the
+    // engine's cookies after a week — including the anti-abuse ones (Google's
+    // AEC and NID, a stored consent choice) that are the whole reason this
+    // profile is persistent. Without them every search arrives as a brand-new
+    // client from a shared address, which is the shape a scraper has.
+    try { manager.set_itp_enabled(false); } catch { /* older WebKit: never on */ }
     return context;
   }
 
@@ -604,13 +705,15 @@ class Renderer {
 
   _applyPageStyle() {
     const theme = readTheme(this.window);
-    const same = JSON.stringify(theme) + this._engineId;
+    const same = JSON.stringify(theme) + this._engineId + (this._challenge ? ' challenge' : '');
     if (same === this._appliedStyle) return;
     this._appliedStyle = same;
     this._ucm.remove_all_style_sheets();
-    this._ucm.add_style_sheet(new WebKit2.UserStyleSheet(
-      pageCss(this._engineId, theme), WebKit2.UserContentInjectedFrames.ALL_FRAMES,
-      WebKit2.UserStyleLevel.USER, this._engine.match, null));
+    if (!this._challenge) {
+      this._ucm.add_style_sheet(new WebKit2.UserStyleSheet(
+        pageCss(this._engineId, theme), WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+        WebKit2.UserStyleLevel.USER, this._engine.match, null));
+    }
     // Followed links are ordinary sites: no rewriting, only the desktop's
     // light/dark preference, which a site that supports it will honour.
     this._ucm.add_style_sheet(new WebKit2.UserStyleSheet(
@@ -644,6 +747,13 @@ class Renderer {
   }
 
   _onLoadChanged(ev) {
+    if (ev === WebKit2.LoadEvent.STARTED) {
+      // Whoever started it — a search, a followed link, the engine's own
+      // redirect, the user answering a bot check — this is a different page
+      // now, so any poll still running for the last one is stale.
+      this._loadSerial += 1;
+      this._lastStatus = 0;
+    }
     if (ev === WebKit2.LoadEvent.COMMITTED) {
       this._goingBack = false;
       // Counted on commit, not at the policy decision: a link that 404s at the
@@ -654,14 +764,80 @@ class Renderer {
         this._emitNav();
       }
     }
-    if (ev === WebKit2.LoadEvent.COMMITTED || ev === WebKit2.LoadEvent.FINISHED) this._checkBlocked();
-    if (ev === WebKit2.LoadEvent.FINISHED && !this._blocked) {
+    if (ev === WebKit2.LoadEvent.COMMITTED) {
+      this._checkChallenge();
+      // The results are often on screen long before the load finishes: Google's
+      // page commits in half a second and finishes three to five later, once
+      // every thumbnail and ad frame is in, and `loading` keeps the skeleton
+      // over results the user could already be reading. An engine that names
+      // its results can be asked from the commit on.
+      // Only for the results, though: running out of time here proves nothing,
+      // because the load is still going — the poll started when it finishes is
+      // the one that falls back to showing the page as it stands.
+      if (this._engine.ready && this._depth === 0) this._settle(this._loadSerial, now() + SETTLE_TIMEOUT_MS, false);
+    }
+    if (ev === WebKit2.LoadEvent.FINISHED) {
       this._loading = false;
+      this._settle(this._loadSerial, now() + SETTLE_TIMEOUT_MS);
+    }
+  }
+
+  /**
+   * What did the load actually produce? On DuckDuckGo that is not known when
+   * the load finishes: the results are built afterwards, and the bot check can
+   * replace them without changing the URL. So the page itself is asked, every
+   * few tens of milliseconds, until it says one or the other — or until the
+   * deadline, at which point whatever is there is what the user gets.
+   */
+  _settle(serial, deadline, fallback = true) {
+    if (serial !== this._loadSerial) return;
+    this._probe(({ready, challenge}) => {
+      if (serial !== this._loadSerial) return;
+      if (challenge) {
+        this._enterChallenge();
+        return;
+      }
+      // The markup probe is a second way to notice a check, never a way to
+      // dismiss one: it knows DuckDuckGo's modal, so on Google's /sorry it
+      // reports "no challenge, nothing to wait for" and would clear a state the
+      // URL was right about. Only the next commit clears it.
+      if (this._challenge) {
+        this._scheduleFrame();
+        return;
+      }
+      if (!ready && now() < deadline) {
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, SETTLE_POLL_MS, () => {
+          this._settle(serial, deadline, fallback);
+          return GLib.SOURCE_REMOVE;
+        });
+        return;
+      }
+      if (!ready && !fallback) return;
+      // The poll started at the commit and the one started when the load
+      // finished can both get here; the page is ready once.
+      if (this._readySerial === serial) return;
+      this._readySerial = serial;
       this._setState('ready', this._engine.label);
       this._emitNav();
       this._scheduleFrame();
       if (DUMP_HTML) this._dumpPage();
-    }
+    });
+  }
+
+  /** Are the results there yet, and is a bot check standing in front of them? */
+  _probe(done) {
+    // A page the user followed is whatever it is: only the engine's own results
+    // page has a shape this code knows how to wait for.
+    const sel = this._depth === 0 ? this._engine.ready : null;
+    const js = `JSON.stringify({ready: ${sel ? `!!document.querySelector(${JSON.stringify(sel)})` : 'true'}, `
+      + `challenge: !!document.querySelector(${JSON.stringify(CHALLENGE_SELECTOR)})})`;
+    this._web.run_javascript(js, null, (view, res) => {
+      // A page that will not run the script must not strand the view on the
+      // skeleton: unknown counts as ready, which is what it was before.
+      let out = {ready: true, challenge: false};
+      try { out = JSON.parse(view.run_javascript_finish(res).get_js_value().to_string()); } catch { /* ready */ }
+      done(out);
+    });
   }
 
   /**
@@ -672,6 +848,33 @@ class Renderer {
     const title = this._depth > 0 ? (this._web.get_title() || hostOf(this._web.get_uri() ?? '')) : '';
     const uri = this._depth > 0 ? (this._web.get_uri() ?? '') : '';
     this.emitSignal('Nav', new GLib.Variant('(uss)', [this._depth >>> 0, title, uri]));
+  }
+
+  /** Load the results page for the current query, with whatever the engine needs to be told. */
+  _loadSerp() {
+    this._servedDark = isDark(readTheme(this.window).bg);
+    const headers = this._engine.headers?.(this._servedDark);
+    if (!headers) {
+      this._web.load_uri(this._engine.serp(this._query));
+      return;
+    }
+    const request = WebKit2.URIRequest.new(this._engine.serp(this._query));
+    for (const [name, value] of Object.entries(headers)) request.get_http_headers().replace(name, value);
+    this._web.load_request(request);
+  }
+
+  /**
+   * An engine that is told the palette picks it when the page is served, so a
+   * switch between light and dark while its results are up leaves them in the
+   * old one, under a stylesheet that has already moved to the new — the same
+   * dark-on-dark the hint exists to prevent. Ask for the page again. Only on
+   * the results page, which is the engine's; a followed site is left to its own
+   * prefers-color-scheme.
+   */
+  _matchServedPalette() {
+    if (!this._engine.headers || !this._query || this._depth > 0 || this._loading || this._challenge) return;
+    if (isDark(readTheme(this.window).bg) === this._servedDark) return;
+    this.Reload();
   }
 
   /**
@@ -704,19 +907,44 @@ class Renderer {
   }
 
   /**
-   * Google answers flagged networks with /sorry — a bot check. The renderer does
-   * not try to get past it: it reports it and stops; the Shell offers the honest
-   * exits (the other engine, or the real browser).
+   * Both engines put a bot check in front of results on a flagged network:
+   * Google at /sorry, DuckDuckGo as a 202 where the results should have been.
+   * It is a page with a form, addressed to the person sitting in front of it,
+   * so the renderer neither fights it nor calls it an error — it shows it,
+   * says what it is, and lets them answer. Answering posts back to the engine,
+   * which is an ordinary engine form (see _onDecidePolicy), and the results
+   * that come back clear the state on their own.
    */
-  _checkBlocked() {
-    if (this._blocked || this._depth > 0 || this._pendingDepth > 0) return;
+  _checkChallenge() {
+    if (this._depth > 0 || this._pendingDepth > 0) return;
     const uri = this._web.get_uri() ?? '';
-    const reason = this._engine.blocked(uri);
-    if (!reason) return;
-    this._blocked = true;
+    if (this._engine.challenge(uri, this._lastStatus)) this._enterChallenge();
+    else this._leaveChallenge();
+  }
+
+  _enterChallenge() {
+    if (this._challenge) {
+      // Already up, and a repaint of it is still worth exporting: the user is
+      // ticking boxes on it.
+      this._scheduleFrame();
+      return;
+    }
+    this._challenge = true;
     this._loading = false;
-    this._web.stop_loading();
-    this._setState('blocked', this._engine.label);
+    // The SERP rules are written for a results page. On the challenge they hide
+    // half the markup and paint the rest in the theme's text colour on top of
+    // the challenge's own white card — which is how "select all squares
+    // containing a duck" ends up as white text on white. Take them off and let
+    // the page look like itself.
+    this._applyPageStyle();
+    this._setState('challenge', this._engine.label);
+    this._scheduleFrame();
+  }
+
+  _leaveChallenge() {
+    if (!this._challenge) return;
+    this._challenge = false;
+    this._applyPageStyle();
   }
 
   _onDecidePolicy(decision, type) {
@@ -731,6 +959,13 @@ class Renderer {
     // become a silent download into the user's Downloads folder. This is not a
     // browser; hand it to the one the user chose.
     if (type === WebKit2.PolicyDecisionType.RESPONSE) {
+      // Only the main document's status says anything about the page: a 202
+      // from some subresource does not make this a challenge.
+      try {
+        if (decision.is_main_frame_main_resource?.() ?? true) {
+          this._lastStatus = decision.get_response().get_status_code();
+        }
+      } catch { /* older WebKit: the URL and the markup are the only signals */ }
       if (decision.is_mime_type_supported()) return false;
       const uri = decision.get_request().get_uri();
       this._launch(uri);
@@ -785,25 +1020,37 @@ class Renderer {
       decision.use();
       return true;
     }
+    // Not every decision here is the main frame's: an iframe loading asks the
+    // same question, and WebKit cannot say which frame is asking — an unnamed
+    // iframe has a null frame name, exactly like the main frame. Google's
+    // results page loads one from ep2.adtrafficquality.google on every search;
+    // taken for a link, it left the view reporting `loading` for good, and in
+    // browser mode opened it in the browser. What separates a link from a page's
+    // machinery is that someone did something. A load nobody asked for — an
+    // iframe, or a followed site's own redirect — goes ahead as it is, without
+    // adding depth or being reported; the main frame's own load events still
+    // report where it ends up.
+    const userStep = navType === WebKit2.NavigationType.LINK_CLICKED
+      || navType === WebKit2.NavigationType.FORM_SUBMITTED
+      || action.is_user_gesture();
+    if (!userStep) {
+      decision.use();
+      return true;
+    }
     // Middle-click and Ctrl+click mean "not here" in every browser; honour that
     // in contained mode rather than making the user change a setting.
     const toBrowser = action.get_mouse_button() === 2
       || (action.get_modifiers() & Gdk.ModifierType.CONTROL_MASK) !== 0;
     if (this._linkMode === 'contained' && !toBrowser) {
-      // A redirect or reload the followed page issues itself is the same visit,
-      // not another step back: only something the user did adds depth.
-      const userStep = navType === WebKit2.NavigationType.LINK_CLICKED
-        || navType === WebKit2.NavigationType.FORM_SUBMITTED
-        || action.is_user_gesture();
       // The engine's own tracking hop is not a page anyone wants to look at or
       // go back to: skip straight to the destination.
       const target = unwrapRedirect(uri);
       if (target !== uri) {
         decision.ignore();
-        if (userStep) this._follow(target);
+        this._follow(target);
         return true;
       }
-      if (userStep) this._pendingDepth = 1;
+      this._pendingDepth = 1;
       this._loading = true;
       this._setState('loading', hostOf(uri));
       decision.use();
@@ -955,7 +1202,7 @@ class Renderer {
       this._applyPageStyle();
     }
     this._query = query;
-    this._blocked = false;
+    this._challenge = false;
     this._loading = true;
     // A new search is the ground floor again: whatever the user had followed is
     // behind them, and the Shell drops the back arrow when depth reaches 0.
@@ -964,7 +1211,7 @@ class Renderer {
     this._goingBack = false;
     this._emitNav();
     this._setState('loading', this._engine.label);
-    this._web.load_uri(this._engine.serp(query));
+    this._loadSerp();
   }
 
   /**
@@ -990,7 +1237,7 @@ class Renderer {
       // the results page is the honest destination, and that is depth 0.
       this._depth = 0;
       this._emitNav();
-      this._web.load_uri(this._engine.serp(this._query));
+      this._loadSerp();
     }
   }
 
@@ -1081,7 +1328,7 @@ class Renderer {
     this._loading = true;
     this._setState('loading', this._depth > 0 ? hostOf(this._web.get_uri() ?? '') : this._engine.label);
     if (this._depth > 0) this._web.reload();
-    else if (this._query) this._web.load_uri(this._engine.serp(this._query));
+    else if (this._query) this._loadSerp();
   }
 
   Refresh() {

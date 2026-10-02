@@ -17,7 +17,7 @@ export const RENDERER_OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 
 /** A frame the renderer has written: raw RGBA, `stride` bytes per row. */
 export interface Frame { path: string; width: number; height: number; stride: number; serial: number; }
-export type RendererState = 'loading' | 'ready' | 'blocked' | 'error' | 'offline';
+export type RendererState = 'loading' | 'ready' | 'challenge' | 'error' | 'offline';
 /** What a clicked link does: follow it in this view, or hand it to the browser. */
 export type LinkMode = 'contained' | 'browser';
 /** Where the user is: depth 0 is the results page itself. */

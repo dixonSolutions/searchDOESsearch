@@ -170,11 +170,20 @@ engine's redirect hop and handed to the default browser with the same http(s)-on
 rule as `browserLauncher.ts`, then reported with `Launched` so the overview closes.
 Response decisions are untouched, so input inside the page is never swallowed.
 
-**Google.** The renderer checks the committed URI; `/sorry` means the "unusual
-traffic" interstitial. Google first serves an empty JavaScript shell (a transient
-`ready`), then navigates itself to `/sorry`; the renderer stops there and reports
-`blocked`, and the overview shows a notice with a DuckDuckGo and a browser button.
-It does not try to pass the check.
+**Google.** The renderer sends WebKit's own user agent — Google checks the
+engine against it and sends a mismatch to `/sorry` — and asks for the palette
+the theme needs with `Sec-CH-Prefers-Color-Scheme`, the client hint Google picks
+its dark theme from. The palette is fixed when the page is served, so a switch
+between light and dark while its results are showing reloads them. A fresh profile's first `/search` is a script-only page that
+navigates itself on to the results (or to `/sorry`), so `ready` waits for the
+results grid, `#rcnt`, polled from the commit rather than from the end of a load
+that takes seconds of thumbnails and ad frames to finish. `/sorry` in the
+committed URI means the "unusual traffic" check: the renderer reports
+`challenge`, takes its stylesheet off so the check looks like itself, and leaves
+it for the user to answer. Google's results page also loads an iframe from
+`ep2.adtrafficquality.google` on every search; navigation decisions do not say
+which frame is asking, so only a navigation the user caused counts as following
+a link.
 
 **Shell integration.** The provider returns one result whose id never changes
 (`sds:page`). `SearchResultsBase` caches result actors by id, so the `PageView`
