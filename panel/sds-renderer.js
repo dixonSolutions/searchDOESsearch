@@ -827,10 +827,14 @@ class Renderer {
   /** Are the results there yet, and is a bot check standing in front of them? */
   _probe(done) {
     // A page the user followed is whatever it is: only the engine's own results
-    // page has a shape this code knows how to wait for.
-    const sel = this._depth === 0 ? this._engine.ready : null;
+    // page has a shape this code knows how to wait for, and only its bot check
+    // is the engine's to report — `#challenge-form` is Cloudflare's form id too,
+    // so a followed site behind that check would be named as the engine's, and
+    // nothing clears that state again until the user is back on the results.
+    const onSerp = this._depth === 0;
+    const sel = onSerp ? this._engine.ready : null;
     const js = `JSON.stringify({ready: ${sel ? `!!document.querySelector(${JSON.stringify(sel)})` : 'true'}, `
-      + `challenge: !!document.querySelector(${JSON.stringify(CHALLENGE_SELECTOR)})})`;
+      + `challenge: ${onSerp ? `!!document.querySelector(${JSON.stringify(CHALLENGE_SELECTOR)})` : 'false'}})`;
     this._web.run_javascript(js, null, (view, res) => {
       // A page that will not run the script must not strand the view on the
       // skeleton: unknown counts as ready, which is what it was before.
@@ -1196,13 +1200,15 @@ class Renderer {
     this._touchIdle();
     query = String(query).trim();
     if (!query) return;
+    // Through _leaveChallenge, not the flag: the check's page is rendered with
+    // the SERP rules taken off, and leaving is what puts them back.
+    this._leaveChallenge();
     const engineId = ENGINES[engine] ? engine : 'duckduckgo';
     if (engineId !== this._engineId) {
       this._engineId = engineId;
       this._applyPageStyle();
     }
     this._query = query;
-    this._challenge = false;
     this._loading = true;
     // A new search is the ground floor again: whatever the user had followed is
     // behind them, and the Shell drops the back arrow when depth reaches 0.
