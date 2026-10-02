@@ -33,6 +33,9 @@ const WINDOW_STYLES: Choice[] = [
   {value: 'floating', label: 'Floating window'},
 ];
 const SHORTCUT_KEY = 'search-window-shortcut';
+/** What turns a key into a chord. Shift is not among them: Shift+S is still a typed S. */
+const CHORD_MODS = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK |
+  Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.HYPER_MASK | Gdk.ModifierType.META_MASK;
 const GEOMETRY_KEYS = ['search-window-position', 'search-window-size'];
 const PLACEMENT: Choice[] = [
   {value: 'default', label: 'Where GNOME puts it'},
@@ -132,7 +135,7 @@ function recordShortcut(parent: Gtk.Widget, settings: Gio.Settings): void {
     if (isModifier(keyval)) return Gdk.EVENT_STOP;
     // Without a modifier the shortcut would eat that key everywhere, in every
     // text field. Function keys and the like are fair game on their own.
-    const bare = mods === 0 && Gdk.keyval_to_unicode(keyval) !== 0;
+    const bare = (mods & CHORD_MODS) === 0 && Gdk.keyval_to_unicode(keyval) !== 0;
     if (bare || !Gtk.accelerator_valid(keyval, mods)) {
       status.description = 'Use it with Super, Ctrl or Alt — a bare key would be taken from every app';
       return Gdk.EVENT_STOP;

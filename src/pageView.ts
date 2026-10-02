@@ -170,6 +170,8 @@ class FrameActor extends St.Widget {
   private _content: St.ImageContent;
   private _serial = -1;
   private _resizeTimer = 0;
+  /** A frame was dropped because this view was off screen; the texture is stale. */
+  private _missedFrame = false;
   private _onEscape: () => void;
   private _onBack: () => boolean;
   private _lastPress: [number, number, number] = [0, 0, 0];
@@ -228,7 +230,14 @@ class FrameActor extends St.Widget {
     // allocation across an overview close never reallocates, so waiting for
     // vfunc_allocate would leave it stretching the search window's page.
     this.connect('notify::mapped', () => {
-      if (this.mapped) this._configureSoon();
+      if (!this.mapped) return;
+      this._configureSoon();
+      // Frames that arrived off screen were dropped, so the texture is as old
+      // as the last visit left it.
+      if (this._missedFrame) {
+        this._missedFrame = false;
+        this._renderer.refresh();
+      }
     });
     this.connect('destroy', () => {
       if (this._resizeTimer) GLib.source_remove(this._resizeTimer);
@@ -238,6 +247,13 @@ class FrameActor extends St.Widget {
 
   /** Upload a frame; older frames arriving late are ignored. */
   showFrame(frame: Frame): void {
+    // Off screen — the other way in has the page, or neither is open. Mapping
+    // the file and uploading a texture nobody can see is pure compositor cost;
+    // mapping again asks the renderer for a current frame.
+    if (!this.mapped) {
+      this._missedFrame = true;
+      return;
+    }
     if (frame.serial <= this._serial && this._serial - frame.serial < 1 << 30) return;
     this._serial = frame.serial;
     try {

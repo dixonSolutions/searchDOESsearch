@@ -198,22 +198,25 @@ export class SearchWindow {
         if (this._open && !this._op && this._style === 'floating') this._layout();
       }));
 
-    // One actor over the whole desktop holds everything: the backdrop catches
-    // the click that closes the window, and the card sits on it. Card
-    // coordinates are therefore stage coordinates, which is what is saved.
+    // One actor over the whole desktop holds everything: it catches the click
+    // that closes the window, and the card sits on it. Card coordinates are
+    // therefore stage coordinates, which is what is saved.
     this._root = new St.Widget({
       style_class: 'sds-window-root',
       reactive: true,
       visible: false,
       layout_manager: new Clutter.FixedLayout(),
     });
-    this._backdrop = new St.Widget({reactive: true});
-    this._blurEffect = this._blur();
-    this._backdrop.add_effect(this._blurEffect);
-    this._backdrop.connect('button-press-event', () => {
+    // The close is on the root rather than the backdrop because the modal grab
+    // covers every monitor while 'full' only frosts one: a click on another
+    // screen must close the window, not vanish into the grab.
+    this._root.connect('button-press-event', () => {
       this.close();
       return Clutter.EVENT_STOP;
     });
+    this._backdrop = new St.Widget();
+    this._blurEffect = this._blur();
+    this._backdrop.add_effect(this._blurEffect);
     this._root.add_child(this._backdrop);
 
     // The card is a bin so the resize grip can sit over its corner.
