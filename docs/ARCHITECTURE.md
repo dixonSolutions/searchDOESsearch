@@ -220,7 +220,7 @@ Nulling all references in `disable()` is mandatory — GNOME Shell does not garb
 
 | GNOME Version | Status |
 |---|---|
-| 48–50 | Supported (developed and tested on 50.1) |
+| 48–51 | Supported. Developed on 50.1; every version is started headless and driven through a search in CI (`.github/workflows/compat.yml`, `make compat`) |
 | 45–47 | Not supported: `St.BoxLayout`'s `orientation` property is 48+, and the stylesheet uses the `-st-accent-color` variables (47+) |
 | < 45 | Not supported (no ES module extensions) |
 

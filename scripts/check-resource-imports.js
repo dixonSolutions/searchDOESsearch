@@ -54,7 +54,7 @@ function sourceFiles() {
         let info;
         while ((info = children.next_file(null))) {
             const name = info.get_name();
-            if (name.endsWith('.ts') || name.endsWith('.js'))
+            if ((name.endsWith('.ts') && !name.endsWith('.d.ts')) || name.endsWith('.js'))
                 files.push(GLib.build_filenamev([dir, name]));
         }
     }
