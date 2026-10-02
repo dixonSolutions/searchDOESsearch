@@ -13,6 +13,7 @@
 #   make check-resources - Every resource:/// import resolves to a real file
 #   make check-freeze - Regression test: cancel-per-keystroke must never block
 #   make check-provider - Regression test: when a page load is (and is not) issued
+#   make check-engines - Live: each engine answers the renderer with results (network)
 #   make compat       - make check + a live headless-Shell smoke run, in a container
 #                       (IMAGE=fedora:45 by default; see the matrix in compat.yml)
 #   make pack         - Package extension into .zip for extensions.gnome.org
@@ -30,7 +31,7 @@ EXT_DIR    := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA_DIR := $(DIST)/schemas
 
 .PHONY: build install enable disable restart nested nested-headless schemas \
-        check check-freeze check-provider check-resources compat pack deb rpm repos verify-repos clean logs
+        check check-freeze check-provider check-resources check-engines compat pack deb rpm repos verify-repos clean logs
 
 # St and Meta ship outside the default typelib search path: /usr/lib on Debian
 # and Ubuntu, /usr/lib64 on Fedora.
@@ -137,15 +138,24 @@ compat:
 		sds-compat:$(COMPAT_TAG) bash -c 'set -e; cp -a /src /work; cd /work; rm -rf node_modules dist build; \
 			npm ci --no-audit --no-fund; make check; ./scripts/shell-smoke.sh /out'
 
+# Not part of `check`: it searches the real engines, so it needs the network and
+# measures a decision made on their servers. Run it after touching anything the
+# engine can see — the user agent, headers, the profile — and whenever an engine
+# starts looking blocked. A private bus and a virtual display keep the renderer
+# it starts away from the desktop's. Pass SDS_CHECK_FRAMES=<dir> to keep frames.
+check-engines:
+	@echo "→ Searching each engine through the renderer..."
+	@NO_AT_BRIDGE=1 timeout 180 dbus-run-session -- xvfb-run -a gjs -m scripts/engine-check.js || \
+	 { echo "✗ An engine did not answer with results"; exit 1; }
+	@echo "✓ Every engine answered with results"
+
+# Every module the build emits rides along, so a new one cannot be left out of the
+# zip (extension.js and prefs.js are packed by name). Expanded after `build` runs.
 pack: build
 	@echo "→ Packaging extension..."
 	gnome-extensions pack $(DIST) \
 		--schema=schemas/org.gnome.shell.extensions.search-does-search.gschema.xml \
-		--extra-source=browserLauncher.js \
-		--extra-source=pageView.js \
-		--extra-source=rendererClient.js \
-		--extra-source=searchProvider.js \
-		--extra-source=section.js \
+		$(foreach js,$(filter-out extension.js prefs.js,$(notdir $(wildcard $(DIST)/*.js))),--extra-source=$(js)) \
 		--extra-source=stylesheet.css \
 		--extra-source=panel \
 		--force \

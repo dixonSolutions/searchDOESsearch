@@ -1,8 +1,9 @@
 /**
- * pageView.ts — the results page, inside the overview.
+ * pageView.ts — the results page, inside the overview or the search window.
  *
  * This is the actor the search provider hands to GNOME Shell as its result
- * (`createResultObject`). It shows the engine's rendered results page as a live
+ * (`createResultObject`), and the body of the search window the shortcut opens
+ * (searchWindow.ts). Where it sits is its `host`'s business. It shows the engine's rendered results page as a live
  * texture — the renderer process exports every repaint as raw RGBA, this actor
  * uploads it with St.ImageContent — and forwards the pointer, scroll and key
  * events it receives to the renderer, so the page scrolls, hovers, focuses and
@@ -49,9 +50,33 @@ export function engineFor(id: string): {id: string; label: string; browser: (q: 
 /** Result meta the provider registers for this view; the id never changes so the Shell reuses the actor. */
 export const PAGE_RESULT_ID = 'sds:page';
 
+/**
+ * What the view sits in. The view decides when it is done with — a link went to
+ * the browser — and what Escape means; the host decides what that does to it.
+ */
+export interface ViewHost {
+  /** Something was handed to the browser: get out of the way. */
+  dismiss(): void;
+  /** Escape pressed with the page focused. */
+  escape(): void;
+  /** Shown while the page has the keyboard, so typing into it is not a surprise. */
+  readonly escapeHint: string;
+}
+
+/** The overview: done means closed, Escape gives the search entry its keyboard back. */
+export const OVERVIEW_HOST: ViewHost = {
+  dismiss: () => Main.overview.hide(),
+  escape: () => (Main.overview as unknown as {searchEntry?: St.Entry}).searchEntry?.grab_key_focus(),
+  escapeHint: 'Esc to search',
+};
+
 export interface PageViewDeps {
   renderer: RendererClient;
   settings: Gio.Settings;
+  /** Defaults to the overview. */
+  host?: ViewHost;
+  /** Page height in logical px; defaults to a share of the monitor that leaves room for the overview. */
+  height?: number;
 }
 
 /** The Shell's global (ui/environment.js); only the stage is needed here. */
@@ -84,10 +109,12 @@ const MESSAGE_MS = 2500;
  * refused D-Bus call hid itself during development.
  */
 const LOAD_TIMEOUT_MS = 15000;
+/** The rendered results' column (pageCss in the renderer); the skeleton matches it. */
+const SKELETON_COLUMN_MAX = 880;
 /** Dim text, done with actor opacity: a hard-coded grey breaks on a user theme. */
 const DIM = 160;
 
-function pageHeight(): number {
+export function pageHeight(): number {
   const monitor = Main.layoutManager.primaryMonitor;
   const height = monitor ? monitor.height : 800;
   return Math.max(PAGE_HEIGHT_MIN, Math.min(PAGE_HEIGHT_MAX, Math.round(height * PAGE_HEIGHT_SHARE)));
@@ -125,8 +152,8 @@ function hostOf(url: string): string {
   }
 }
 
-function launch(url: string): void {
-  if (openInDefaultBrowser(url)) Main.overview.hide();
+function launch(url: string, host: ViewHost): void {
+  if (openInDefaultBrowser(url)) host.dismiss();
 }
 
 export function linkModeOf(settings: Gio.Settings): LinkMode {
@@ -148,7 +175,7 @@ class FrameActor extends St.Widget {
   private _lastPress: [number, number, number] = [0, 0, 0];
   private _clicks = 1;
 
-  constructor(renderer: RendererClient, onEscape: () => void, onBack: () => boolean) {
+  constructor(renderer: RendererClient, height: number, onEscape: () => void, onBack: () => boolean) {
     super({
       style_class: 'sds-frame',
       reactive: true,
@@ -164,10 +191,10 @@ class FrameActor extends St.Widget {
     // Without a preferred size St logs "initialized with invalid preferred
     // size: -1x-1" for every view it builds. The real size arrives with the
     // first frame; this is only the value St asks for before that.
-    this._content = new St.ImageContent({preferred_width: 1, preferred_height: pageHeight()});
+    this._content = new St.ImageContent({preferred_width: 1, preferred_height: height});
     this.set_content(this._content);
     this.content_gravity = Clutter.ContentGravity.RESIZE_FILL;
-    this.set_height(pageHeight());
+    this.set_height(height);
 
     this.connect('button-press-event', (_a: Clutter.Actor, event: Clutter.Event) => {
       this.grab_key_focus();
@@ -196,6 +223,13 @@ class FrameActor extends St.Widget {
     this.connect('scroll-event', (_a: Clutter.Actor, event: Clutter.Event) => this._scroll(event));
     this.connect('key-press-event', (_a: Clutter.Actor, event: Clutter.Event) => this._key('press', event));
     this.connect('key-release-event', (_a: Clutter.Actor, event: Clutter.Event) => this._key('release', event));
+    // One renderer, one page size, two places to show it. Whichever frame
+    // comes on screen claims the size it was allocated: a view that keeps its
+    // allocation across an overview close never reallocates, so waiting for
+    // vfunc_allocate would leave it stretching the search window's page.
+    this.connect('notify::mapped', () => {
+      if (this.mapped) this._configureSoon();
+    });
     this.connect('destroy', () => {
       if (this._resizeTimer) GLib.source_remove(this._resizeTimer);
       this._resizeTimer = 0;
@@ -225,13 +259,18 @@ class FrameActor extends St.Widget {
     const width = Math.round(box.get_width());
     const height = Math.round(box.get_height());
     if (width < 16 || height < 16) return;
+    this._configureSoon();
+  }
+
+  private _configureSoon(): void {
     if (this._resizeTimer) return;
     this._resizeTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RESIZE_SETTLE_MS, () => {
       this._resizeTimer = 0;
       const scale = scaleFactor();
       const w = Math.round(this.get_width());
       const h = Math.round(this.get_height());
-      if (w >= 16 && h >= 16) this._renderer.configure(Math.round(w * scale), Math.round(h * scale), scale);
+      if (this.mapped && w >= 16 && h >= 16)
+        this._renderer.configure(Math.round(w * scale), Math.round(h * scale), scale);
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -325,7 +364,7 @@ class Skeleton extends St.BoxLayout {
   private _pulse: St.BoxLayout;
 
   constructor() {
-    super({style_class: 'sds-skeleton', x_expand: true, y_expand: true, visible: false});
+    super({style_class: 'sds-skeleton', x_expand: true, y_expand: true, visible: false, clip_to_allocation: true});
     // One animated actor, not twenty: the pulse is on the column as a whole.
     this._pulse = new St.BoxLayout({
       style_class: 'sds-skeleton-column',
@@ -335,6 +374,20 @@ class Skeleton extends St.BoxLayout {
     });
     for (let i = 0; i < 5; i++) this._pulse.add_child(this._row());
     this.add_child(this._pulse);
+  }
+
+  /**
+   * The column is the rendered results' 880px wide, or the whole width when
+   * there is less: a centred child keeps its natural width even when that is
+   * wider than its parent, which in the floating search window spilled the
+   * skeleton out of the card.
+   */
+  override vfunc_allocate(box: Clutter.ActorBox): void {
+    this.set_allocation(box);
+    const content = this.get_theme_node().get_content_box(box);
+    const width = Math.min(SKELETON_COLUMN_MAX, content.get_width());
+    const x1 = content.x1 + Math.round((content.get_width() - width) / 2);
+    this._pulse.allocate(new Clutter.ActorBox({x1, y1: content.y1, x2: x1 + width, y2: content.y2}));
   }
 
   /** Title, url, and two lines of snippet — the shape of one result. */
@@ -438,6 +491,7 @@ class BackButton extends St.Button {
 export const PageView = GObject.registerClass(
 class PageView extends St.BoxLayout {
   private _deps: PageViewDeps;
+  private _host: ViewHost;
   private _query = '';
   private _state: RendererState = 'loading';
   private _nav: Nav = {depth: 0, title: '', uri: ''};
@@ -450,6 +504,9 @@ class PageView extends St.BoxLayout {
   private _spinnerTimer = 0;
   private _loadTimer = 0;
   private _offlineBar!: St.BoxLayout;
+  private _challengeBar!: St.BoxLayout;
+  private _missedFrame = false;
+  private _challengeText!: St.Label;
   private _messageTimer = 0;
   private _message = '';
   private _open: St.Button;
@@ -476,6 +533,8 @@ class PageView extends St.BoxLayout {
       reactive: true,
     });
     this._deps = deps;
+    this._host = deps.host ?? OVERVIEW_HOST;
+    const height = deps.height ?? pageHeight();
     this.metaInfo = {id: PAGE_RESULT_ID, name: '', description: ''};
 
     // --- header: [ title ......... ] [ hint ] [ spinner ] [ open ] [ ← n ] ---
@@ -493,7 +552,7 @@ class PageView extends St.BoxLayout {
     // Once the page has the keyboard, what you type goes into the page, not the
     // search entry. Nothing else on screen says so, and a user retyping their
     // query types it into the site instead.
-    this._focusHint = new St.Label({style_class: 'sds-hint', text: 'Esc to search', opacity: 140,
+    this._focusHint = new St.Label({style_class: 'sds-hint', text: this._host.escapeHint, opacity: 140,
       y_align: Clutter.ActorAlign.CENTER, visible: false});
     header.add_child(this._focusHint);
     this._spinner = new Spinner(16, {animate: true, hideOnStop: true});
@@ -524,8 +583,25 @@ class PageView extends St.BoxLayout {
       this._hint.visible = !this._focusHint.visible && this.has_style_pseudo_class('selected');
     });
 
+    // --- bot check ---
+    // Above the page, because it is the caption for it: underneath, it would be
+    // read after the thing it explains. The text names the engine; see
+    // _showChallenge.
+    this._challengeBar = new St.BoxLayout({style_class: 'sds-challenge-bar', x_expand: true, visible: false});
+    this._challengeText = new St.Label({
+      style_class: 'sds-challenge-text',
+      x_expand: true,
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    this._challengeText.clutter_text.line_wrap = true;
+    this._challengeBar.add_child(this._challengeText);
+    const challengeEscape = new St.Button({style_class: 'button', label: 'Open in browser', can_focus: true});
+    challengeEscape.connect('clicked', () => this.activate());
+    this._challengeBar.add_child(challengeEscape);
+    this.add_child(this._challengeBar);
+
     // --- the page ---
-    this._frame = new FrameActor(deps.renderer, () => this._focusEntry(), () => this._goBack());
+    this._frame = new FrameActor(deps.renderer, height, () => this._host.escape(), () => this._goBack());
     this._frame.connect('key-focus-in', () => {
       this._focusHint.visible = true;
       this._hint.visible = false;
@@ -536,10 +612,10 @@ class PageView extends St.BoxLayout {
     });
     this.add_child(this._frame);
     this._skeleton = new Skeleton();
-    this._skeleton.set_height(pageHeight());
+    this._skeleton.set_height(height);
     this.add_child(this._skeleton);
 
-    // --- notice (blocked engine / load error) ---
+    // --- notice (load error) ---
     this._notice = new St.BoxLayout({style_class: 'sds-notice', orientation: Clutter.Orientation.VERTICAL, x_expand: true, x_align: Clutter.ActorAlign.CENTER, visible: false});
     this._noticeTitle = new St.Label({style_class: 'sds-notice-title', x_align: Clutter.ActorAlign.CENTER});
     this._noticeBody = new St.Label({style_class: 'sds-notice-body', x_align: Clutter.ActorAlign.CENTER, x_expand: true});
@@ -563,7 +639,7 @@ class PageView extends St.BoxLayout {
     this._offlineBar = new St.BoxLayout({style_class: 'sds-offline-bar', x_expand: true, visible: false});
     this._offlineBar.add_child(new St.Label({
       style_class: 'sds-offline-text',
-      text: 'Unable To Query (internet broken or not connected)',
+      text: 'No internet connection. The search runs again when you are back online.',
       x_expand: true,
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
@@ -571,15 +647,26 @@ class PageView extends St.BoxLayout {
     this.add_child(this._offlineBar);
 
     this._listener = {
-      onFrame: frame => this._frame.showFrame(frame),
+      // Both views hear every frame; only one is on screen. Uploading for the
+      // other would double the compositor's work for a texture nobody sees, so
+      // it asks for the current frame when it comes back instead.
+      onFrame: frame => {
+        if (this.mapped) this._frame.showFrame(frame);
+        else this._missedFrame = true;
+      },
       onState: (state, detail, query) => this._onState(state, detail, query),
-      onLaunched: () => Main.overview.hide(),
+      onLaunched: () => this._host.dismiss(),
       onNav: nav => this._onNav(nav),
       onRefused: scheme => this._flash(`${scheme}: links are only followed for web pages`),
     };
     deps.renderer.addListener(this._listener);
     this._settingsId = deps.settings.connect('changed', (_s: Gio.Settings, key: string) => this._onSettingChanged(key));
     deps.renderer.setLinkMode(linkModeOf(deps.settings));
+    this.connect('notify::mapped', () => {
+      if (!this.mapped || !this._missedFrame) return;
+      this._missedFrame = false;
+      deps.renderer.refresh();
+    });
     this.connect('destroy', () => this._onDestroy());
     // A view built while the renderer is already showing a page needs its frame.
     deps.renderer.refresh();
@@ -598,7 +685,8 @@ class PageView extends St.BoxLayout {
     if (query === this._query) return;
     this._query = query;
     this.metaInfo.name = query;
-    if (this._nav.depth === 0 && !this._notice.visible && !this._offlineBar.visible) {
+    if (this._nav.depth === 0 && !this._notice.visible && !this._offlineBar.visible
+        && !this._challengeBar.visible) {
       this._showPage(query !== '' && query === this._pageQuery);
     }
     this._updateStatus();
@@ -658,18 +746,27 @@ class PageView extends St.BoxLayout {
       return;
     }
     if (!this._query) return;
-    launch(engineFor(this._engineId).browser(this._query));
+    launch(engineFor(this._engineId).browser(this._query), this._host);
+  }
+
+  /**
+   * Resize the page area: the floating search window is resized from its
+   * corner. The frame's new allocation re-sizes the renderer's page.
+   */
+  setPageHeight(height: number): void {
+    this._frame.set_height(height);
+    this._skeleton.set_height(height);
+  }
+
+  /** Give the page the keyboard, from an entry above it. */
+  focusPage(): void {
+    if (this._frame.visible) this._frame.grab_key_focus();
   }
 
   /** Result contract: the menu key; there is no context menu. */
   popup_menu(): void {}
 
   private get _engineId(): string { return engineFor(this._deps.settings.get_string('engine')).id; }
-
-  private _focusEntry(): void {
-    const entry = (Main.overview as unknown as {searchEntry?: St.Entry}).searchEntry;
-    entry?.grab_key_focus();
-  }
 
   private _goBack(): boolean {
     if (this._nav.depth <= 0) return false;
@@ -705,7 +802,7 @@ class PageView extends St.BoxLayout {
 
   private _openCurrentInBrowser(): void {
     this._deps.renderer.openCurrent();
-    Main.overview.hide();
+    this._host.dismiss();
   }
 
   /** True while the user is on a page they followed, not on the results page. */
@@ -713,8 +810,19 @@ class PageView extends St.BoxLayout {
 
   private _onState(state: RendererState, detail: string, query: string): void {
     // A load that finished for terms the user has already moved past says
-    // nothing about what they are waiting for now.
-    if (query && this._query && query !== this._query) return;
+    // nothing about what they are waiting for now — except that the renderer
+    // is no longer showing this view's page. Two views share one renderer (the
+    // overview's and the search window's), so the frames this one holds may
+    // now be another search's; it must not present them as its own.
+    if (query && this._query && query !== this._query) {
+      if (this._nav.depth === 0) {
+        this._pageQuery = '';
+        // A bot check for that other query is not this view's to caption.
+        this._challengeBar.visible = false;
+        if (!this._notice.visible && !this._offlineBar.visible) this._showPage(false);
+      }
+      return;
+    }
     this._state = state;
     this._updateStatus();
     const engine = engineFor(this._engineId);
@@ -723,13 +831,14 @@ class PageView extends St.BoxLayout {
       return;
     }
     this._offlineBar.visible = false;
-    if (state === 'blocked') {
-      this._showNotice(`${engine.label} is refusing this network`,
-        `${engine.label} answered with its "unusual traffic" check instead of results. That is decided by ` +
-        'the IP address (VPN exits are often flagged) and will not be worked around here.',
-        [['Use DuckDuckGo', () => this._deps.settings.set_string('engine', 'duckduckgo')],
-          ['Open in browser', () => this.activate()]]);
-    } else if (state === 'error' && this._nav.depth > 0) {
+    if (state === 'challenge') {
+      // Not a notice: a notice replaces the page, and the page is the thing the
+      // user has to answer. It stays, and stays interactive.
+      this._showChallenge(engine.label);
+      return;
+    }
+    this._challengeBar.visible = false;
+    if (state === 'error' && this._nav.depth > 0) {
       // A followed page failed, not the engine: offer the way back, not a
       // reload of a results page the user is not looking at.
       const host = hostOf(this._nav.uri) || 'that page';
@@ -775,7 +884,7 @@ class PageView extends St.BoxLayout {
       this._title.opacity = 255;
     } else {
       const engine = engineFor(this._engineId);
-      const suffix = {loading: '', ready: '', blocked: ' · blocked', error: ' · failed', offline: ' · offline'}[this._state] ?? '';
+      const suffix = {loading: '', ready: '', challenge: ' · bot check', error: ' · failed', offline: ' · offline'}[this._state] ?? '';
       this._title.clutter_text.set_markup(esc(`${engine.label}${suffix}`));
       this._title.opacity = DIM;
     }
@@ -835,13 +944,30 @@ class PageView extends St.BoxLayout {
   /** No page, no skeleton, no buttons: one row saying why there is nothing. */
   private _showOffline(): void {
     this._notice.visible = false;
+    this._challengeBar.visible = false;
     this._frame.visible = false;
     this._skeleton.stop();
     this._offlineBar.visible = true;
   }
 
+  /**
+   * A bot check is neither an error nor a dead end, so it does not get an error
+   * card: the page is left on screen and interactive, and the bar above it says
+   * what it is. Without the bar an unstyled grid of photographs reads as the
+   * extension having broken — which is exactly how it did read.
+   */
+  private _showChallenge(engineLabel: string): void {
+    this._challengeText.text = `${engineLabel} wants to check that you are not a robot. Answer it below to see your results.`;
+    this._notice.visible = false;
+    this._offlineBar.visible = false;
+    this._skeleton.stop();
+    this._frame.visible = true;
+    this._challengeBar.visible = true;
+  }
+
   private _showNotice(title: string, body: string, buttons: Array<[string, () => void]>): void {
     this._offlineBar.visible = false;
+    this._challengeBar.visible = false;
     this._noticeTitle.text = title;
     this._noticeBody.text = body;
     this._noticeButtons.remove_all_children();
@@ -868,7 +994,10 @@ class PageView extends St.BoxLayout {
         this._state = 'loading';
         this._showPage(false);
         this._updateStatus();
-        if (this._query) this._deps.renderer.search(this._query, this._engineId);
+        // Every live view hears this; only the one whose query the renderer holds
+        // asks again, or the overview and the window would race two searches.
+        if (this._query && this._deps.renderer.lastSearch?.[0] === this._query)
+          this._deps.renderer.search(this._query, this._engineId);
         break;
       default:
         break;

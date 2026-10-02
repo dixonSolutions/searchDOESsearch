@@ -9,6 +9,13 @@ extracted from `/usr/lib/gnome-shell/libshell-18.so` and
 `/usr/share/gnome-shell/gnome-shell-theme.gresource` on this machine. Every
 Shell internal it leans on is named in § F with a fallback.
 
+> **Since this was written:** the `blocked` state is now `challenge`. A bot
+> check is left on screen for the user to answer, with a bar above it, rather
+> than replaced by a notice (title suffix ` · bot check`). Google is no longer
+> refused outright: that came from the renderer claiming to be Firefox (see
+> [GJS-PITFALLS.md](GJS-PITFALLS.md)), and DuckDuckGo is rendered from its
+> JavaScript page rather than `html.duckduckgo.com`. The rest of the spec stands.
+
 **Two things the spec takes as given, because they are already in the tree:**
 
 1. The uncommitted working-tree diff already extends the renderer protocol for

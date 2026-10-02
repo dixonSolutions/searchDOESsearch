@@ -17,7 +17,7 @@ export const RENDERER_OBJECT_PATH = '/io/github/searchdoessearch/Renderer';
 
 /** A frame the renderer has written: raw RGBA, `stride` bytes per row. */
 export interface Frame { path: string; width: number; height: number; stride: number; serial: number; }
-export type RendererState = 'loading' | 'ready' | 'blocked' | 'error' | 'offline';
+export type RendererState = 'loading' | 'ready' | 'challenge' | 'error' | 'offline';
 /** What a clicked link does: follow it in this view, or hand it to the browser. */
 export type LinkMode = 'contained' | 'browser';
 /** Where the user is: depth 0 is the results page itself. */
@@ -73,6 +73,13 @@ export class RendererClient {
   }
 
   get isRunning(): boolean { return this._proxy !== null; }
+
+  /**
+   * The search the renderer was last asked for, as `[query, engine]`. Two
+   * providers share this renderer (the overview's and the search window's), so
+   * neither can trust its own memory of what is loaded.
+   */
+  get lastSearch(): readonly [string, string] | null { return this._lastSearch; }
 
   /**
    * Whether there is any point asking for a page. Checked in both places a load
