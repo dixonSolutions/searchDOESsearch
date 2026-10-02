@@ -1,0 +1,93 @@
+name: GNOME Shell compatibility
+
+# Every Shell version metadata.json claims, started headless in a distribution
+# image that ships it, and driven through a search: `make check`, then
+# scripts/shell-smoke.sh. `make compat IMAGE=...` runs one of these locally.
+
+# Not on push to main: the pull request already ran it, and a release push
+# runs it again through release.yml before publishing anything.
+on:
+  pull_request:
+  # Distributions ship Shell point releases under us; a weekly run catches a
+  # .1 that breaks something before a user does.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: |
+          # The image that ships each Shell. A version added to metadata.json
+          # with no image here fails this job: claiming a Shell nobody has run
+          # the extension on is how a broken release reaches extensions.gnome.org.
+          declare -A IMAGE=(
+            [48]=debian:trixie
+            [49]=fedora:43
+            [50]=ubuntu:26.04
+            [51]=fedora:45
+          )
+          include=()
+          for v in $(jq -r '."shell-version"[]' metadata.json); do
+            [[ -n "${IMAGE[$v]:-}" ]] || { echo "::error file=metadata.json::no test image for GNOME $v in compat.yml"; exit 1; }
+            include+=("{\"shell\":\"$v\",\"image\":\"${IMAGE[$v]}\"}")
+          done
+          echo "matrix={\"include\":[$(IFS=,; echo "${include[*]}")]}" >> "$GITHUB_OUTPUT"
+
+  shell:
+    needs: plan
+    name: GNOME ${{ matrix.shell }} (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/ci-deps.sh
+      - run: npm ci --no-audit --no-fund
+      - run: make check
+      - run: bash scripts/shell-smoke.sh build/smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-gnome-${{ matrix.shell }}
+          path: build/smoke
+          if-no-files-found: ignore
+
+  # The next Shell, before it is released: rawhide carries it from the first
+  # alpha. Non-blocking, and the version check is off — the point is to learn
+  # what breaks while there is still time to fix it.
+  next:
+    runs-on: ubuntu-latest
+    container: fedora:rawhide
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/ci-deps.sh
+      - run: npm ci --no-audit --no-fund
+      - run: make check
+      - run: bash scripts/shell-smoke.sh build/smoke
+        env:
+          SDS_SMOKE_ANY_SHELL: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-gnome-next
+          path: build/smoke
+          if-no-files-found: ignore

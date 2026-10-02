@@ -6,8 +6,8 @@ push people at them:
 | Channel | What it gives the user | Built by |
 |---|---|---|
 | **APT and DNF repositories** on GitHub Pages | System-wide install, upgrades arriving with the rest of their system updates, and a declared dependency on the WebKit2 4.1 typelib the renderer needs | `.github/workflows/pages.yml` |
-| **extensions.gnome.org** | Per-user install and GNOME's own automatic updates | `release.yml`, dispatched with `publish_ego` |
-| **GitHub Releases** (`.zip`, `.deb`, `.rpm`) | A download with no repository and no root, for people who want neither of the above — but nothing updates it for them | `release.yml` on a `v*` tag |
+| **extensions.gnome.org** | Per-user install and GNOME's own automatic updates | `release.yml`, on merging a version bump |
+| **GitHub Releases** (`.zip`, `.deb`, `.rpm`) | A download with no repository and no root, for people who want neither of the above — but nothing updates it for them | `release.yml`, on merging a version bump |
 
 ---
 
@@ -141,8 +141,10 @@ they submit". Before uploading:
       exist, no `shell-version` claim that contradicts the README
 
 ### Recommended
-- [ ] Works on both X11 and Wayland
-- [ ] Works across all listed `shell-version` values
+- [ ] Works across all listed `shell-version` values — `compat.yml` runs each one
+      live, and fails if one is listed without a test image
+- [ ] No `shell-version` newer than the latest stable Shell (plus at most one
+      development release): EGO rejects claims on future versions
 - [ ] Has a meaningful icon (uses a system symbolic icon)
 - [ ] Settings defaults are sensible
 - [ ] No console spam — only log on errors and lifecycle events
@@ -173,25 +175,84 @@ schemas/org.gnome.shell.extensions.search-does-search.gschema.xml
 
 ---
 
-## Automated release pipeline
+## Releasing
 
-Every pull request and commit to `main` runs `.github/workflows/release.yml`,
-type-checks the extension, builds the ZIP, verifies its runtime contents, and
-uploads the ZIP as a workflow artifact. A `v*` tag also creates a GitHub release.
+A release is a pull request that changes `version-name`:
 
-The workflow can upload to EGO when manually dispatched with `publish_ego`
-enabled. Configure repository secrets `EGO_USER` and `EGO_PASSWORD` first. The
-upload accepts the EGO terms of service and still enters GNOME's manual review.
+```bash
+git switch -c release-1.1.0 origin/main
+scripts/release.sh bump 1.1.0     # metadata.json, package.json, package-lock.json
+git push -u origin release-1.1.0  # and open the pull request
+```
 
-## Submit to extensions.gnome.org
+Merging it does the rest. On every push to `main`, `release.yml` reads
+`version-name`; if there is no `v<version-name>` tag yet, that commit is a
+release:
 
-1. Create an account at [extensions.gnome.org](https://extensions.gnome.org)
-2. Go to [extensions.gnome.org/upload](https://extensions.gnome.org/upload/)
-3. Upload the `.zip` file
-4. Fill in the description, screenshots, and changelog
-5. Submit for review
+1. **package** — type-check, `make pack`, the `.deb` and `.rpm`, and the content
+   checks. On every pull request too, along with a check that the three
+   version fields agree.
+2. **compat** — `compat.yml`, called from the release: every Shell in
+   `shell-version`, started headless in a distribution image that ships it and
+   driven through a search. Nothing is published unless all of them pass.
+3. **github-release** — creates the `v<version>` tag on the tested commit and
+   the GitHub release with the zip, `.deb` and `.rpm` attached.
+4. **extensions-gnome-org** — uploads the *same* zip to EGO's review queue with
+   `gnome-extensions upload`. That command is new in GNOME 49 and
+   `ubuntu-latest` ships 46, so the job runs in an `ubuntu:26.04` container.
 
-**Review timeline:** Manual review typically takes **a few days to a few weeks** depending on maintainer availability.
+`pages.yml` publishes the APT and DNF repositories from the same push, as it
+does for every commit to `main`.
+
+A failed release retries itself: the tag is only created in step 3, so the next
+push to `main` (or re-running the workflow) finds the version still untagged.
+To upload a commit's zip to EGO again (after a rejected review, say), dispatch
+`release.yml` with **publish_ego**; it still runs the compat matrix first.
+
+### One-time setup
+
+1. **The EGO account.** Create one at
+   [extensions.gnome.org](https://extensions.gnome.org/accounts/register/). The
+   upload logs in with a username and password (`/api/v1/accounts/login/`):
+   EGO has no API tokens, so use an account you can afford to hand to CI.
+2. **The `extensions.gnome.org` environment.** *Settings → Environments → New
+   environment*, named exactly that, with secrets `EGO_USER` and
+   `EGO_PASSWORD`. Only a job that names the environment can read them, and
+   only this one does. Add yourself as a **required reviewer** if you want
+   to look at the GitHub release before the upload goes out: the job then
+   waits for a click.
+3. **The first upload.** EGO creates the extension page from the first
+   upload. It can come from CI like any other; if the API turns away a UUID it
+   has never seen, upload that one zip by hand at
+   [extensions.gnome.org/upload](https://extensions.gnome.org/upload/) and let
+   CI take every later one. Add the screenshot and description on the page
+   while it waits for review.
+
+### What review means for the automation
+
+Every upload goes to a person. A version is not visible to users until it is
+approved, which takes from days to a few weeks, and EGO numbers the versions
+itself (the integer `version` field; never set it in `metadata.json`, the
+package job fails if it is there). Two consequences:
+
+- Keep one upload in the queue at a time. A newer upload makes the pending one
+  moot, and the reviewer starts over on the new one.
+- A Shell-version-only release (adding `"52"` in March) is cheap to review but
+  is still a review: bump `version-name` for it like any other release.
+
+### Supporting a new GNOME release
+
+Twice a year, around March and September:
+
+1. The `next` job in `compat.yml` runs the extension on `fedora:rawhide` with
+   the version check off, weekly. When it goes red, the next Shell has broken
+   something; read the [porting guide](https://gjs.guide/extensions/upgrading/)
+   for that version.
+2. Once the Shell is **released**, add its number to `shell-version` and add
+   the image that ships it to the map in `compat.yml` — the build fails until
+   both are there. EGO rejects a claim on an unreleased Shell (one development
+   release at most), so do not add it early.
+3. Release as above.
 
 ---
 
@@ -208,37 +269,7 @@ The GNOME review team checks for:
 | **Compatibility** | Works with all listed shell versions |
 | **Code quality** | Readable, maintainable code |
 
-Full guidelines: [wiki.gnome.org/Projects/GnomeShell/Extensions/ReviewGuidelines](https://wiki.gnome.org/Projects/GnomeShell/Extensions/ReviewGuidelines)
-
----
-
-## Versioning
-
-When publishing updates:
-
-1. Bump `version` (integer) in `metadata.json`
-2. Update `version-name` (string) for human display
-3. Rebuild and repackage
-4. Upload the new zip on EGO — it will go through review again
-
-```json
-{
-  "version": 2,
-  "version-name": "1.1.0"
-}
-```
-
----
-
-## GitHub Releases (Recommended)
-
-Keep releases on GitHub alongside EGO submissions so users can track changes:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-# Then create a GitHub Release and attach the .zip
-```
+Full guidelines: [gjs.guide/extensions/review-guidelines](https://gjs.guide/extensions/review-guidelines/review-guidelines.html)
 
 ---
 

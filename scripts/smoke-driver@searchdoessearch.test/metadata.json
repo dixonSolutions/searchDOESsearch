@@ -1,0 +1,6 @@
+{
+  "name": "Search Does Search smoke driver",
+  "description": "Test only: drives Search Does Search inside a headless Shell for scripts/shell-smoke.sh. Never shipped.",
+  "uuid": "smoke-driver@searchdoessearch.test",
+  "shell-version": ["48", "49", "50", "51"]
+}

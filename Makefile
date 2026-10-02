@@ -5,7 +5,7 @@
 #   make install      - Install extension to ~/.local/share/gnome-shell/extensions/
 #   make enable       - Enable the extension via gnome-extensions CLI
 #   make disable      - Disable the extension
-#   make restart      - Restart GNOME Shell (X11 only)
+#   make restart      - Restart GNOME Shell (X11 sessions, GNOME 48–49 only)
 #   make nested       - Build, install, and run it in a nested shell (windowed)
 #   make nested-headless - Same, but with no window (virtual monitor)
 #   make schemas      - Compile GSettings schemas
@@ -13,6 +13,8 @@
 #   make check-resources - Every resource:/// import resolves to a real file
 #   make check-freeze - Regression test: cancel-per-keystroke must never block
 #   make check-provider - Regression test: when a page load is (and is not) issued
+#   make compat       - make check + a live headless-Shell smoke run, in a container
+#                       (IMAGE=fedora:45 by default; see the matrix in compat.yml)
 #   make pack         - Package extension into .zip for extensions.gnome.org
 #   make deb          - Build the .deb (system-scope install)
 #   make rpm          - Build the .rpm (system-scope install)
@@ -22,15 +24,18 @@
 #   make logs         - Tail GNOME Shell logs (useful for debugging)
 
 UUID       := search-does-search@searchdoessearch.github.io
+space      := $(subst ,, )
 DIST       := dist/$(UUID)
 EXT_DIR    := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA_DIR := $(DIST)/schemas
 
 .PHONY: build install enable disable restart nested nested-headless schemas \
-        check check-freeze check-provider check-resources pack deb rpm repos verify-repos clean logs
+        check check-freeze check-provider check-resources compat pack deb rpm repos verify-repos clean logs
 
-# St and Meta ship outside the default typelib search path.
-SHELL_TYPELIBS := /usr/lib/gnome-shell:$(firstword $(wildcard /usr/lib/*/mutter-*))
+# St and Meta ship outside the default typelib search path: /usr/lib on Debian
+# and Ubuntu, /usr/lib64 on Fedora.
+SHELL_TYPELIBS := $(subst $(space),:,$(strip $(wildcard /usr/lib/gnome-shell /usr/lib64/gnome-shell) \
+                  $(firstword $(wildcard /usr/lib/*/mutter-* /usr/lib64/mutter-*))))
 # A deadlock regression makes the harness hang rather than fail, so cap it.
 FREEZE_TIMEOUT := 60
 
@@ -60,7 +65,7 @@ disable:
 	gnome-extensions disable $(UUID)
 	@echo "✓ Extension disabled"
 
-# X11 only: restart GNOME Shell without logging out
+# X11 sessions only, so GNOME 48 and 49: 50 removed the X11 session.
 restart:
 	@echo "→ Restarting GNOME Shell (X11 only)..."
 	busctl --user call org.gnome.Shell /org/gnome/Shell org.gnome.Shell Eval s 'Meta.restart("Restarting…", global.context)'
@@ -109,6 +114,28 @@ check-provider: build
 	 timeout $(FREEZE_TIMEOUT) gjs -m scripts/provider-check.js || \
 	 { echo "✗ Provider load decisions are wrong"; exit 1; }
 	@echo "✓ Provider load decisions OK"
+
+# The Shell versions in metadata.json are each tested in a distribution image
+# that ships them; .github/workflows/compat.yml lists which image is which.
+# Screenshots and the shell log land in build/compat/<image>/.
+IMAGE     ?= fedora:45
+CONTAINER ?= $(firstword $(shell command -v podman docker 2>/dev/null))
+
+# The Shell and WebKit are a few hundred packages, so they are installed once
+# into a local sds-compat image per distribution and reused; the tree itself is
+# copied in fresh every run.
+COMPAT_TAG := $(subst :,-,$(IMAGE))
+
+compat:
+	@test -n "$(CONTAINER)" || { echo "compat: needs podman or docker"; exit 1; }
+	$(CONTAINER) build -q -t sds-compat:$(COMPAT_TAG) --build-arg IMAGE=$(IMAGE) \
+		-f scripts/Containerfile.compat scripts
+	mkdir -p "build/compat/$(COMPAT_TAG)"
+	$(CONTAINER) run --rm \
+		-v "$(CURDIR)":/src:ro,Z \
+		-v "$(CURDIR)/build/compat/$(COMPAT_TAG)":/out:Z \
+		sds-compat:$(COMPAT_TAG) bash -c 'set -e; cp -a /src /work; cd /work; rm -rf node_modules dist build; \
+			npm ci --no-audit --no-fund; make check; ./scripts/shell-smoke.sh /out'
 
 pack: build
 	@echo "→ Packaging extension..."
