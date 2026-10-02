@@ -100,7 +100,7 @@
   width: 560px;
 }
 
-/* ── notice (blocked / error) ───────────────────────────────────────────── */
+/* ── notice (load error) ────────────────────────────────────────────────── */
 .sds-notice {
   padding: 48px 24px;
   spacing: 8px;
@@ -125,6 +125,19 @@
   background-color: rgba(0, 0, 0, 0.18);
 }
 .sds-offline-text {
+  font-weight: bold;
+  opacity: 0.85;
+}
+
+/* A bot check in front of the results. Not styled as an error: the page below
+   is real and answerable, and this is its caption. */
+.sds-challenge-bar {
+  padding: 10px 12px 10px 16px;
+  border-radius: 8px;
+  background-color: rgba(0, 0, 0, 0.18);
+  spacing: 12px;
+}
+.sds-challenge-text {
   font-weight: bold;
   opacity: 0.85;
 }
@@ -197,4 +210,5 @@
 
 /* The page view sits flush in the card, under the entry. */
 .sds-window .sds-page { padding: 0 2px 2px 2px; }
-.sds-window .sds-offline-bar { background-color: rgba(255, 255, 255, 0.08); }
+.sds-window .sds-offline-bar,
+.sds-window .sds-challenge-bar { background-color: rgba(255, 255, 255, 0.08); }

@@ -193,7 +193,7 @@ export default class SearchDoesSearchPreferences extends ExtensionPreferences {
         'Scroll, click and type in it as usual.',
     });
     display.add(choiceRow(settings, 'engine', 'Engine',
-      'Google refuses many networks with a bot check; the page reports that rather than working around it', ENGINES));
+      'On a network the engine has flagged, such as a VPN, it may ask you to prove you are not a robot first', ENGINES));
     display.add(choiceRow(settings, 'link-mode', 'Open links',
       'In place, a back button counts how many pages deep you are; middle-click still uses your browser. ' +
       'Downloads and PDFs always go to your browser',
