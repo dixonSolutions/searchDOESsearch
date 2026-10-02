@@ -1,0 +1,6 @@
+# `make compat`: a distribution image with everything scripts/ci-deps.sh
+# installs, built once per IMAGE and cached.
+ARG IMAGE=fedora:45
+FROM ${IMAGE}
+COPY ci-deps.sh /usr/local/bin/sds-ci-deps
+RUN sds-ci-deps

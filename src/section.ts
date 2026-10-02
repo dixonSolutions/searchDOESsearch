@@ -98,6 +98,7 @@ export class SectionPlacement {
   private _pinned = false;
   private _parentIds: Array<[Clutter.Actor, number]> = [];
   private _childIds: Array<[Clutter.Actor, number]> = [];
+  private _sectionIds: Array<[Clutter.Actor, number]> = [];
   private _applyTimer = 0;
   private _settingsId = 0;
   private _hidden = false;
@@ -136,6 +137,7 @@ export class SectionPlacement {
     if (!section || section === this._section) return;
     this._release();
     this._section = section;
+    this._track(this._sectionIds, section, () => this._forget());
     try {
       this._attachTo(section);
     } catch (error) {
@@ -175,6 +177,10 @@ export class SectionPlacement {
           this._parentIds.push([parent, parent.connect(signal, () => this._watchChildren())]);
         } catch { /* older Clutter: the notify::visible hooks still cover it */ }
       }
+      this._track(this._parentIds, parent, () => {
+        this._parentIds = [];
+        this._parent = null;
+      });
       this._parent = parent;
       this._homeIndex = parent.get_children().indexOf(section);
       this._pinned = false;
@@ -195,8 +201,43 @@ export class SectionPlacement {
       this._childIds.push([child, child.connect('notify::visible', () => {
         if (!this._applying) this._queueApply(child === this._section && child.visible);
       })]);
+      this._track(this._childIds, child, () => {
+        this._childIds = this._childIds.filter(([actor]) => actor !== child);
+      });
     }
     this._queueApply();
+  }
+
+  /**
+   * Run `gone` when the Shell destroys `actor`. Its handlers go with it, so the
+   * bookkeeping for it is dropped rather than disconnected: disconnecting from a
+   * disposed actor is a CRITICAL in the log, and touching one is worse. The hook
+   * itself goes in `ids` with the actor's other handlers, for _release().
+   */
+  private _track(ids: Array<[Clutter.Actor, number]>, actor: Clutter.Actor, gone: () => void): void {
+    ids.push([actor, actor.connect('destroy', gone)]);
+  }
+
+  /**
+   * The section was destroyed: after a reset, or with the whole overview when
+   * the Shell shuts down — still turning its main loop, so an apply already
+   * queued would land on a disposed actor. Let go of everything that pointed
+   * into it.
+   */
+  private _forget(): void {
+    if (this._applyTimer) GLib.source_remove(this._applyTimer);
+    this._applyTimer = 0;
+    for (const [actor, id] of [...this._parentIds, ...this._childIds]) {
+      if (actor !== this._section) disconnectSafely(actor, id);
+    }
+    this._sectionIds = [];
+    this._parentIds = [];
+    this._childIds = [];
+    this._parent = null;
+    this._card = null;
+    this._section = null;
+    this._hidden = false;
+    this._pinned = false;
   }
 
   /**
@@ -316,6 +357,7 @@ export class SectionPlacement {
       // A half-released placement must not take the rest of disable() with it:
       // the provider and the renderer are torn down after this returns.
       console.warn(`[SearchDoesSearch] releasing the section failed: ${error}`);
+      this._sectionIds = [];
       this._parentIds = [];
       this._childIds = [];
       this._parent = null;
@@ -328,7 +370,8 @@ export class SectionPlacement {
   private _releaseUnsafe(): void {
     if (this._applyTimer) GLib.source_remove(this._applyTimer);
     this._applyTimer = 0;
-    for (const [actor, id] of [...this._parentIds, ...this._childIds]) disconnectSafely(actor, id);
+    for (const [actor, id] of [...this._sectionIds, ...this._parentIds, ...this._childIds]) disconnectSafely(actor, id);
+    this._sectionIds = [];
     this._parentIds = [];
     this._childIds = [];
     this._parent = null;

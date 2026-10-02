@@ -1,23 +1,38 @@
 name: Build and release GNOME extension
 
+# Releasing is merging a pull request that bumps version-name in metadata.json
+# (scripts/release.sh bump X.Y.Z writes that commit). On main, a version-name
+# with no v<version-name> tag yet is a release: once the compat matrix passes
+# on every Shell metadata.json claims, this tags the commit, publishes the
+# GitHub release and uploads the same zip to extensions.gnome.org.
+
 on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       publish_ego:
-        description: Upload to extensions.gnome.org (requires EGO secrets)
+        description: Upload this commit's zip to extensions.gnome.org again (e.g. after a rejected review)
         type: boolean
         default: false
 
 permissions:
   contents: read
 
+# Two pushes to main in quick succession would both see the version untagged
+# and race each other to the release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      # true on a push to main whose version-name has not been released yet
+      release: ${{ github.event_name == 'push' && steps.version.outputs.released == 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,6 +50,29 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
+      # Three files carry the version, and a release built from a mismatch ships
+      # one number in the zip and another in the .deb and .rpm.
+      - name: Check the version is the same everywhere
+        id: version
+        run: |
+          meta=$(jq -r '."version-name"' metadata.json)
+          pkg=$(jq -r .version package.json)
+          lock=$(jq -r .version package-lock.json)
+          if [[ "$meta" != "$pkg" || "$meta" != "$lock" ]]; then
+            echo "::error file=metadata.json::version-name $meta, package.json $pkg, package-lock.json $lock — run scripts/release.sh bump"
+            exit 1
+          fi
+          if jq -e 'has("version")' metadata.json >/dev/null; then
+            echo "::error file=metadata.json::drop \"version\": extensions.gnome.org assigns it"
+            exit 1
+          fi
+          echo "version=$meta" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$meta" >/dev/null; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # A wrong resource:/// path type-checks, packs, and installs cleanly, then
       # fails in whichever process imports it. One shipped: prefs pointed at
       # resource:///org/gnome/shell/extensions/prefs.js, which the Shell has
@@ -51,12 +89,17 @@ jobs:
           # Every module the Shell imports at runtime, plus the renderer the
           # extension spawns. A missing one produces an extension that installs
           # and then does nothing, which is the failure this check exists for.
-          for file in extension.js searchProvider.js section.js pageView.js \
-                      rendererClient.js browserLauncher.js prefs.js \
-                      panel/sds-renderer.js stylesheet.css metadata.json \
+          # Every module the build emitted is listed by what it emitted, so a new
+          # one is checked without anyone remembering to add it here.
+          modules=$(cd dist/search-does-search@searchdoessearch.github.io && find . -name '*.js' -printf '%P\n')
+          for file in $modules stylesheet.css metadata.json \
                       schemas/org.gnome.shell.extensions.search-does-search.gschema.xml; do
             grep -F "$file" contents.txt || { echo "::error::$file missing from $ZIP"; exit 1; }
           done
+          # The smoke driver is a test-only extension; it must never ride along.
+          if grep -F smoke-driver contents.txt; then
+            echo "::error::the smoke driver is in $ZIP"; exit 1
+          fi
 
       - name: Build distribution packages
         run: |
@@ -88,16 +131,15 @@ jobs:
             build/packages/*.rpm
           if-no-files-found: error
 
-      - name: Upload to extensions.gnome.org
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_ego
-        env:
-          EGO_USER: ${{ secrets.EGO_USER }}
-          EGO_PASSWORD: ${{ secrets.EGO_PASSWORD }}
-        run: printf '%s' "$EGO_PASSWORD" | gnome-extensions upload --user "$EGO_USER" --password-file=- --accept-tos search-does-search@searchdoessearch.github.io.shell-extension.zip
+  # Every Shell version metadata.json claims, live, before anything is published.
+  compat:
+    needs: package
+    if: needs.package.outputs.release == 'true' || (inputs.publish_ego && github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/compat.yml
 
   github-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
+    needs: [package, compat]
+    if: needs.package.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -105,13 +147,52 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: shell-extension
-      - name: Publish GitHub release
+      - name: Tag and publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.package.outputs.version }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
+          # --target creates the tag on the commit that was tested, so the tag,
+          # the release and the EGO upload are all the same tree.
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Search Does Search $VERSION" \
             --generate-notes \
             search-does-search@searchdoessearch.github.io.shell-extension.zip \
             build/packages/*.deb \
             build/packages/*.rpm
+
+  # The zip goes to GNOME's manual review queue; this cannot publish anything
+  # by itself. The `extensions.gnome.org` environment holds EGO_USER and
+  # EGO_PASSWORD and can require an approval before this job starts.
+  extensions-gnome-org:
+    needs: [package, compat, github-release]
+    if: >-
+      !cancelled() && needs.compat.result == 'success' &&
+      (needs.github-release.result == 'success' || (inputs.publish_ego && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    # `gnome-extensions upload` is new in GNOME 49; ubuntu-latest ships 46.
+    container: ubuntu:26.04
+    environment:
+      name: extensions.gnome.org
+      url: https://extensions.gnome.org/extension-info/?uuid=search-does-search@searchdoessearch.github.io
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-extension
+      - name: Install gnome-extensions
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -q -y --no-install-recommends ca-certificates gnome-shell
+          gnome-extensions version
+      - name: Upload to extensions.gnome.org
+        env:
+          EGO_USER: ${{ secrets.EGO_USER }}
+          EGO_PASSWORD: ${{ secrets.EGO_PASSWORD }}
+        run: |
+          [[ -n "$EGO_USER" && -n "$EGO_PASSWORD" ]] || { echo "::error::EGO_USER and EGO_PASSWORD are not set on the extensions.gnome.org environment"; exit 1; }
+          printf '%s' "$EGO_PASSWORD" | gnome-extensions upload \
+            --user "$EGO_USER" --password-file=- --accept-tos \
+            search-does-search@searchdoessearch.github.io.shell-extension.zip
+          echo "Uploaded; it is now in the review queue at https://extensions.gnome.org/review/"

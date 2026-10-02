@@ -42,8 +42,8 @@ make install
 make enable
 
 # 6. Restart GNOME Shell
-#    X11:    Alt + F2 → type 'r' → Enter
 #    Wayland: Log out and back in (or use a nested session — see below)
+#    X11 (GNOME 48–49 only; 50 removed the session): Alt + F2 → type 'r' → Enter
 ```
 
 After restart, open Activities (Super key) and type a query that local apps/files will not match — web result cards should appear after a short debounce.
@@ -57,12 +57,43 @@ After restart, open Activities (Super key) and type a query that local apps/file
 # Then rebuild and reinstall:
 make install
 
-# On X11, restart the shell without logging out:
+# On an X11 session (GNOME 48–49), restart the shell without logging out:
 make restart
 
 # On Wayland, test the change in a nested session (see below):
 make nested
 ```
+
+### Testing on every supported GNOME version
+
+`metadata.json` claims four Shell versions and a developer machine runs one.
+`make compat` starts a distribution image that ships another, runs `make check`
+in it, and then `scripts/shell-smoke.sh`: a real headless GNOME Shell with the
+extension and a small test-only driver extension
+(`scripts/smoke-driver@searchdoessearch.test`) that opens the overview, types a
+query, waits for the renderer, disables the extension, checks the renderer
+exited, enables it again and searches again. Screenshots and the Shell log land
+in `build/compat/<image>/`.
+
+```bash
+make compat                       # fedora:45 — GNOME 51
+make compat IMAGE=ubuntu:26.04    # GNOME 50
+make compat IMAGE=fedora:43       # GNOME 49
+make compat IMAGE=debian:trixie   # GNOME 48
+```
+
+It needs podman or docker, and network (the renderer loads a real page). The
+first run per image installs the Shell and WebKit into a local
+`sds-compat:<image>` image (`scripts/Containerfile.compat`), which takes a while;
+later runs reuse it. The
+same matrix runs in `.github/workflows/compat.yml` on every pull request, plus a
+weekly run and a non-blocking `fedora:rawhide` canary that warns about the
+*next* Shell before anyone files a bug. Adding a version to `shell-version`
+without an image for it in that workflow fails the build.
+
+`shell-smoke.sh` refuses to run outside a container: it starts its own system
+bus with a dbusmock logind on it (49 and later will not start without one) and
+installs into `$HOME`.
 
 ### Testing a change without logging out (Wayland)
 
@@ -280,7 +311,7 @@ section that hides — only exists inside a running Shell.
    scroll position you left
 5. Middle-click or Ctrl+click a link: it goes to the browser instead, and the view
    stays where it was
-6. Set "Show web results" to "Only when nothing else matched": a query matching an
+6. With "In the overview" at "As a fallback" (the default): a query matching an
    app hides the section entirely; a query nothing else matches shows it
 7. Switch the engine to Google in Extension Settings: its results render, in its
    dark palette if the theme is dark, with the weather card and AI overview

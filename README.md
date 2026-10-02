@@ -35,14 +35,15 @@ paragraph, settle the argument, carry on with what you were doing.
   own search — for every query, only when nothing else matched (the default), or never
 - Queries never touch a third party you did not choose
 - Debounces keystrokes, and warms the renderer while the overview opens
-- Works on X11 and Wayland
-- Compatible with GNOME Shell 48, 49 and 50
+- Works on Wayland, and on X11 where the Shell still has an X11 session (48 and 49)
+- Compatible with GNOME Shell 48, 49, 50 and 51 — every one of them started headless
+  in CI and driven through a search on each pull request
 
 ---
 
 ## Requirements
 
-- GNOME Shell 48, 49 or 50
+- GNOME Shell 48, 49, 50 or 51
 - The WebKit2 4.1 GJS typelib — the renderer process:
   `gir1.2-webkit2-4.1` on Debian/Ubuntu, `webkit2gtk4.1` on Fedora.
   The packages below depend on it; the zip and source installs do not, so
@@ -173,7 +174,7 @@ can test a change without logging out of your own.
 
 A **packaged** extension is installed system-wide and deliberately not enabled
 for you. A new system extension is only picked up by a fresh session, so log out
-and back in (Wayland) or press Alt+F2 and type `r` (X11), then:
+and back in (on an X11 session, GNOME 48 or 49, Alt+F2 then `r` also works), then:
 
 ```bash
 gnome-extensions enable search-does-search@searchdoessearch.github.io
