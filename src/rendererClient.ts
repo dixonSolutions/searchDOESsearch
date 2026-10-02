@@ -75,6 +75,13 @@ export class RendererClient {
   get isRunning(): boolean { return this._proxy !== null; }
 
   /**
+   * The search the renderer was last asked for, as `[query, engine]`. Two
+   * providers share this renderer (the overview's and the search window's), so
+   * neither can trust its own memory of what is loaded.
+   */
+  get lastSearch(): readonly [string, string] | null { return this._lastSearch; }
+
+  /**
    * Whether there is any point asking for a page. Checked in both places a load
    * can start: search(), and the replay in _onNameAppeared — a renderer that
    * joins the bus after a prewarm re-issues the last search, which would

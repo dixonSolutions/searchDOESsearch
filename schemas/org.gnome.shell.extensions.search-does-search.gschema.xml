@@ -3,10 +3,11 @@
   <schema id="org.gnome.shell.extensions.search-does-search"
           path="/org/gnome/shell/extensions/search-does-search/">
 
-    <!-- Four keys, all enums. The page is rendered by panel/sds-renderer.js (a
-         separate process — GNOME Shell cannot host WebKit) and shown in the
-         overview by the page view; these keys are read by the page view, the
-         section placement and the prefs UI. -->
+    <!-- The page is rendered by panel/sds-renderer.js (a separate process —
+         GNOME Shell cannot host WebKit) and shown by the page view, either in
+         the overview's search results or in the search window a shortcut
+         opens. Two independent ways in, each switched on or off here:
+         section-visibility for the overview, search-window for the shortcut. -->
 
     <key name="engine" type="s">
       <choices>
@@ -47,14 +48,17 @@
       <choices>
         <choice value="always"/>
         <choice value="no-other-results"/>
+        <choice value="never"/>
       </choices>
-      <default>'always'</default>
-      <summary>When the web results section is shown</summary>
+      <default>'no-other-results'</default>
+      <summary>When the web results section is shown in the overview</summary>
       <description>
         'always' shows the section for every search. 'no-other-results' shows it
         only when no application, file or other provider matched; your browser's own
         "Search online" entry answers every query, so it does not count as a match.
-        The page is rendered either way, so showing it is instant.
+        The page is rendered either way, so showing it is instant. 'never' keeps
+        the extension out of the overview entirely, for someone who only wants the
+        search window.
       </description>
     </key>
 
@@ -75,6 +79,26 @@
         This moves the section, not the keyboard selection: GNOME picks what Enter
         activates by provider registration order, so with another section showing,
         Enter still goes to that one.
+      </description>
+    </key>
+
+    <key name="search-window" type="b">
+      <default>true</default>
+      <summary>Open a search window with a keyboard shortcut</summary>
+      <description>
+        A shortcut that works anywhere opens a search box over whatever you are
+        doing, with the results page under it as you type. Escape, a click outside
+        it, or the shortcut again closes it. Independent of section-visibility:
+        either, both or neither can be on.
+      </description>
+    </key>
+
+    <key name="search-window-shortcut" type="as">
+      <default><![CDATA[['<Super><Shift>s']]]></default>
+      <summary>Shortcut that opens the search window</summary>
+      <description>
+        Read by the window manager directly, so a change takes effect at once. An
+        empty list leaves the window with no shortcut.
       </description>
     </key>
 

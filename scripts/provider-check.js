@@ -2,13 +2,17 @@
 /*
  * provider-check.js — the provider's decisions about when to load a page.
  *
- * Three rules, each of which has been wrong at some point:
+ * Four rules, each of which has been wrong at some point:
  *   1. terms that settle load the page once, not once per keystroke;
  *   2. the same terms settling again do not reload (the overview was reopened
  *      on a page that is already showing);
  *   3. unless the user has followed links from it — then the results page is no
  *      longer what is on screen, and settling has to bring it back. Without
- *      this, retyping your own query while three pages deep strands you there.
+ *      this, retyping your own query while three pages deep strands you there;
+ *   4. the renderer is shared by the overview's provider and the search
+ *      window's, so "already showing" means what the renderer holds, not what
+ *      this provider last asked for — or the overview reopens on the window's
+ *      page under its own terms.
  *
  * Driven with a fake renderer and a fake view, so nothing here needs a Shell.
  * Run via `make check-provider`. Exits 0 on success, 1 on failure.
@@ -41,6 +45,20 @@ const view = {
 const provider = new SearchProvider({engine: 'duckduckgo', renderer, createView: () => view});
 // createResultObject is how the provider adopts the view, exactly as the Shell does.
 provider.createResultObject({id: 'sds:page'});
+
+/** Rule 4: one renderer that knows what it holds, two providers driving it. */
+const shared = {
+  lastSearch: null,
+  loads: [],
+  search(query, engine) {
+    this.lastSearch = [query, engine];
+    this.loads.push(query);
+  },
+};
+const overview = new SearchProvider({engine: 'duckduckgo', renderer: shared});
+const searchWindow = new SearchProvider({engine: 'duckduckgo', renderer: shared});
+const inactive = new SearchProvider({engine: 'duckduckgo', renderer: shared, active: false});
+const terms = text => text.split(' ');
 
 function type(text) {
   provider.getInitialResultSet(text.split(' '), new Gio.Cancellable());
@@ -83,6 +101,29 @@ const steps = [
   () => {
     check('only the last of two quick queries loads', searches.length === 3);
     check('and it is the last one', searches[2] === 'two/duckduckgo');
+    print('two providers share a renderer: the overview searches, then the window');
+    overview.getInitialResultSet(terms('flower'), new Gio.Cancellable());
+  },
+  () => {
+    searchWindow.getInitialResultSet(terms('tulip'), new Gio.Cancellable());
+  },
+  () => {
+    check('both searches loaded', shared.loads.join(',') === 'flower,tulip');
+    print('the overview is reopened on its old terms');
+    overview.getInitialResultSet(terms('flower'), new Gio.Cancellable());
+  },
+  () => {
+    check('reloads what the window replaced', shared.loads.join(',') === 'flower,tulip,flower');
+    print('an inactive provider (the overview switched off) is asked to search');
+    const answer = [];
+    inactive.getInitialResultSet(terms('rose'), new Gio.Cancellable()).then(ids => answer.push(...ids));
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+      check('it answers with nothing', answer.length === 0);
+      return GLib.SOURCE_REMOVE;
+    });
+  },
+  () => {
+    check('and loads nothing', shared.loads.length === 3);
   },
 ];
 
@@ -96,6 +137,9 @@ GLib.timeout_add(GLib.PRIORITY_DEFAULT, SETTLE_MS, () => {
 
 loop.run();
 provider.destroy();
+overview.destroy();
+searchWindow.destroy();
+inactive.destroy();
 
 if (failures.length) {
   print(`\nFAIL: ${failures.length} of the provider's rules are broken`);

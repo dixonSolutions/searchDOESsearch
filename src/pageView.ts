@@ -1,8 +1,9 @@
 /**
- * pageView.ts — the results page, inside the overview.
+ * pageView.ts — the results page, inside the overview or the search window.
  *
  * This is the actor the search provider hands to GNOME Shell as its result
- * (`createResultObject`). It shows the engine's rendered results page as a live
+ * (`createResultObject`), and the body of the search window the shortcut opens
+ * (searchWindow.ts). Where it sits is its `host`'s business. It shows the engine's rendered results page as a live
  * texture — the renderer process exports every repaint as raw RGBA, this actor
  * uploads it with St.ImageContent — and forwards the pointer, scroll and key
  * events it receives to the renderer, so the page scrolls, hovers, focuses and
@@ -49,9 +50,33 @@ export function engineFor(id: string): {id: string; label: string; browser: (q: 
 /** Result meta the provider registers for this view; the id never changes so the Shell reuses the actor. */
 export const PAGE_RESULT_ID = 'sds:page';
 
+/**
+ * What the view sits in. The view decides when it is done with — a link went to
+ * the browser — and what Escape means; the host decides what that does to it.
+ */
+export interface ViewHost {
+  /** Something was handed to the browser: get out of the way. */
+  dismiss(): void;
+  /** Escape pressed with the page focused. */
+  escape(): void;
+  /** Shown while the page has the keyboard, so typing into it is not a surprise. */
+  readonly escapeHint: string;
+}
+
+/** The overview: done means closed, Escape gives the search entry its keyboard back. */
+export const OVERVIEW_HOST: ViewHost = {
+  dismiss: () => Main.overview.hide(),
+  escape: () => (Main.overview as unknown as {searchEntry?: St.Entry}).searchEntry?.grab_key_focus(),
+  escapeHint: 'Esc to search',
+};
+
 export interface PageViewDeps {
   renderer: RendererClient;
   settings: Gio.Settings;
+  /** Defaults to the overview. */
+  host?: ViewHost;
+  /** Page height in logical px; defaults to a share of the monitor that leaves room for the overview. */
+  height?: number;
 }
 
 /** The Shell's global (ui/environment.js); only the stage is needed here. */
@@ -87,7 +112,7 @@ const LOAD_TIMEOUT_MS = 15000;
 /** Dim text, done with actor opacity: a hard-coded grey breaks on a user theme. */
 const DIM = 160;
 
-function pageHeight(): number {
+export function pageHeight(): number {
   const monitor = Main.layoutManager.primaryMonitor;
   const height = monitor ? monitor.height : 800;
   return Math.max(PAGE_HEIGHT_MIN, Math.min(PAGE_HEIGHT_MAX, Math.round(height * PAGE_HEIGHT_SHARE)));
@@ -125,8 +150,8 @@ function hostOf(url: string): string {
   }
 }
 
-function launch(url: string): void {
-  if (openInDefaultBrowser(url)) Main.overview.hide();
+function launch(url: string, host: ViewHost): void {
+  if (openInDefaultBrowser(url)) host.dismiss();
 }
 
 export function linkModeOf(settings: Gio.Settings): LinkMode {
@@ -148,7 +173,7 @@ class FrameActor extends St.Widget {
   private _lastPress: [number, number, number] = [0, 0, 0];
   private _clicks = 1;
 
-  constructor(renderer: RendererClient, onEscape: () => void, onBack: () => boolean) {
+  constructor(renderer: RendererClient, height: number, onEscape: () => void, onBack: () => boolean) {
     super({
       style_class: 'sds-frame',
       reactive: true,
@@ -164,10 +189,10 @@ class FrameActor extends St.Widget {
     // Without a preferred size St logs "initialized with invalid preferred
     // size: -1x-1" for every view it builds. The real size arrives with the
     // first frame; this is only the value St asks for before that.
-    this._content = new St.ImageContent({preferred_width: 1, preferred_height: pageHeight()});
+    this._content = new St.ImageContent({preferred_width: 1, preferred_height: height});
     this.set_content(this._content);
     this.content_gravity = Clutter.ContentGravity.RESIZE_FILL;
-    this.set_height(pageHeight());
+    this.set_height(height);
 
     this.connect('button-press-event', (_a: Clutter.Actor, event: Clutter.Event) => {
       this.grab_key_focus();
@@ -196,6 +221,13 @@ class FrameActor extends St.Widget {
     this.connect('scroll-event', (_a: Clutter.Actor, event: Clutter.Event) => this._scroll(event));
     this.connect('key-press-event', (_a: Clutter.Actor, event: Clutter.Event) => this._key('press', event));
     this.connect('key-release-event', (_a: Clutter.Actor, event: Clutter.Event) => this._key('release', event));
+    // One renderer, one page size, two places to show it. Whichever frame
+    // comes on screen claims the size it was allocated: a view that keeps its
+    // allocation across an overview close never reallocates, so waiting for
+    // vfunc_allocate would leave it stretching the search window's page.
+    this.connect('notify::mapped', () => {
+      if (this.mapped) this._configureSoon();
+    });
     this.connect('destroy', () => {
       if (this._resizeTimer) GLib.source_remove(this._resizeTimer);
       this._resizeTimer = 0;
@@ -225,13 +257,18 @@ class FrameActor extends St.Widget {
     const width = Math.round(box.get_width());
     const height = Math.round(box.get_height());
     if (width < 16 || height < 16) return;
+    this._configureSoon();
+  }
+
+  private _configureSoon(): void {
     if (this._resizeTimer) return;
     this._resizeTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RESIZE_SETTLE_MS, () => {
       this._resizeTimer = 0;
       const scale = scaleFactor();
       const w = Math.round(this.get_width());
       const h = Math.round(this.get_height());
-      if (w >= 16 && h >= 16) this._renderer.configure(Math.round(w * scale), Math.round(h * scale), scale);
+      if (this.mapped && w >= 16 && h >= 16)
+        this._renderer.configure(Math.round(w * scale), Math.round(h * scale), scale);
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -438,6 +475,7 @@ class BackButton extends St.Button {
 export const PageView = GObject.registerClass(
 class PageView extends St.BoxLayout {
   private _deps: PageViewDeps;
+  private _host: ViewHost;
   private _query = '';
   private _state: RendererState = 'loading';
   private _nav: Nav = {depth: 0, title: '', uri: ''};
@@ -476,6 +514,8 @@ class PageView extends St.BoxLayout {
       reactive: true,
     });
     this._deps = deps;
+    this._host = deps.host ?? OVERVIEW_HOST;
+    const height = deps.height ?? pageHeight();
     this.metaInfo = {id: PAGE_RESULT_ID, name: '', description: ''};
 
     // --- header: [ title ......... ] [ hint ] [ spinner ] [ open ] [ ← n ] ---
@@ -493,7 +533,7 @@ class PageView extends St.BoxLayout {
     // Once the page has the keyboard, what you type goes into the page, not the
     // search entry. Nothing else on screen says so, and a user retyping their
     // query types it into the site instead.
-    this._focusHint = new St.Label({style_class: 'sds-hint', text: 'Esc to search', opacity: 140,
+    this._focusHint = new St.Label({style_class: 'sds-hint', text: this._host.escapeHint, opacity: 140,
       y_align: Clutter.ActorAlign.CENTER, visible: false});
     header.add_child(this._focusHint);
     this._spinner = new Spinner(16, {animate: true, hideOnStop: true});
@@ -525,7 +565,7 @@ class PageView extends St.BoxLayout {
     });
 
     // --- the page ---
-    this._frame = new FrameActor(deps.renderer, () => this._focusEntry(), () => this._goBack());
+    this._frame = new FrameActor(deps.renderer, height, () => this._host.escape(), () => this._goBack());
     this._frame.connect('key-focus-in', () => {
       this._focusHint.visible = true;
       this._hint.visible = false;
@@ -536,7 +576,7 @@ class PageView extends St.BoxLayout {
     });
     this.add_child(this._frame);
     this._skeleton = new Skeleton();
-    this._skeleton.set_height(pageHeight());
+    this._skeleton.set_height(height);
     this.add_child(this._skeleton);
 
     // --- notice (blocked engine / load error) ---
@@ -573,7 +613,7 @@ class PageView extends St.BoxLayout {
     this._listener = {
       onFrame: frame => this._frame.showFrame(frame),
       onState: (state, detail, query) => this._onState(state, detail, query),
-      onLaunched: () => Main.overview.hide(),
+      onLaunched: () => this._host.dismiss(),
       onNav: nav => this._onNav(nav),
       onRefused: scheme => this._flash(`${scheme}: links are only followed for web pages`),
     };
@@ -658,18 +698,18 @@ class PageView extends St.BoxLayout {
       return;
     }
     if (!this._query) return;
-    launch(engineFor(this._engineId).browser(this._query));
+    launch(engineFor(this._engineId).browser(this._query), this._host);
+  }
+
+  /** Give the page the keyboard, from an entry above it. */
+  focusPage(): void {
+    if (this._frame.visible) this._frame.grab_key_focus();
   }
 
   /** Result contract: the menu key; there is no context menu. */
   popup_menu(): void {}
 
   private get _engineId(): string { return engineFor(this._deps.settings.get_string('engine')).id; }
-
-  private _focusEntry(): void {
-    const entry = (Main.overview as unknown as {searchEntry?: St.Entry}).searchEntry;
-    entry?.grab_key_focus();
-  }
 
   private _goBack(): boolean {
     if (this._nav.depth <= 0) return false;
@@ -705,7 +745,7 @@ class PageView extends St.BoxLayout {
 
   private _openCurrentInBrowser(): void {
     this._deps.renderer.openCurrent();
-    Main.overview.hide();
+    this._host.dismiss();
   }
 
   /** True while the user is on a page they followed, not on the results page. */
@@ -713,8 +753,17 @@ class PageView extends St.BoxLayout {
 
   private _onState(state: RendererState, detail: string, query: string): void {
     // A load that finished for terms the user has already moved past says
-    // nothing about what they are waiting for now.
-    if (query && this._query && query !== this._query) return;
+    // nothing about what they are waiting for now — except that the renderer
+    // is no longer showing this view's page. Two views share one renderer (the
+    // overview's and the search window's), so the frames this one holds may
+    // now be another search's; it must not present them as its own.
+    if (query && this._query && query !== this._query) {
+      if (this._nav.depth === 0) {
+        this._pageQuery = '';
+        if (!this._notice.visible && !this._offlineBar.visible) this._showPage(false);
+      }
+      return;
+    }
     this._state = state;
     this._updateStatus();
     const engine = engineFor(this._engineId);
