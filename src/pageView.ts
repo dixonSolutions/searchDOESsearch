@@ -942,7 +942,10 @@ class PageView extends St.BoxLayout {
         this._state = 'loading';
         this._showPage(false);
         this._updateStatus();
-        if (this._query) this._deps.renderer.search(this._query, this._engineId);
+        // Every live view hears this; only the one whose query the renderer holds
+        // asks again, or the overview and the window would race two searches.
+        if (this._query && this._deps.renderer.lastSearch?.[0] === this._query)
+          this._deps.renderer.search(this._query, this._engineId);
         break;
       default:
         break;
