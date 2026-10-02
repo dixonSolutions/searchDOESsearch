@@ -30,6 +30,12 @@ EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
 mkdir -p "$EXT_DIR"
 rm -rf "${EXT_DIR:?}/$UUID" "${EXT_DIR:?}/$DRIVER"
 cp -a "$REPO_DIR/dist/$UUID" "$REPO_DIR/scripts/$DRIVER" "$EXT_DIR/"
+# The driver is a harness, not a compatibility claim, so it claims whichever
+# Shell is installed: a version added to metadata.json must never leave the
+# driver OUT_OF_DATE, enable() unrun and this script waiting for a DONE line.
+SHELL_MAJOR="$(gnome-shell --version | tr -dc '0-9.' | cut -d. -f1)"
+sed -i "s/\"shell-version\": \[[^]]*\]/\"shell-version\": [\"$SHELL_MAJOR\"]/" \
+  "$EXT_DIR/$DRIVER/metadata.json"
 
 mkdir -p /run/dbus
 dbus-uuidgen --ensure
