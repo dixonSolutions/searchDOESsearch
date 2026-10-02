@@ -188,6 +188,28 @@ services; all three violate Google's ToS, would block publication on
 extensions.gnome.org, and push the cost onto the user, whose home IP gets flagged for
 ordinary browsing.
 
+> **Second correction (October 2026): the WebKit row above was the renderer
+> lying about itself.** Every measurement in it was taken with the renderer's user
+> agent set to Firefox 128 — chosen for DuckDuckGo's HTML endpoint, never
+> revisited — and Google's results page runs a script that checks the engine
+> against the user agent. Interleaved on fresh profiles, same IP, same hour:
+>
+> | User agent sent by WebKitGTK 2.52 | `/search` |
+> |---|---|
+> | Firefox 128 (what the renderer sent) | `/sorry`, 429 — 2 of 2 |
+> | Chrome 141 | `/sorry`, 429 — 2 of 2 |
+> | WebKit's own default | results — 2 of 2, and 10 of 10 in a row on one warm profile |
+> | Safari 18 (macOS), Epiphany-style Linux Safari | results — 2 of 2 each |
+>
+> So the gate *is* on the runtime environment, as the section says — but what it
+> checks is that the environment matches the claim, and a WebKit that says it is
+> WebKit passes. The first response is 200 and the refusal comes after the
+> page's script has run, which is why it looked like a refusal "on request one".
+> The renderer now sends WebKit's own UA; `make check-engines` searches both
+> engines through it on a fresh profile, and fails when either answers with its
+> bot check. Before concluding an engine blocks this renderer, check what the
+> renderer told it.
+
 > Correction to an earlier revision of this document, which concluded the block was
 > on "IP and request pattern". That was wrong, and wrong for an instructive reason:
 > the CAPTCHA observed at the time was self-inflicted by ~10 rapid test requests. On

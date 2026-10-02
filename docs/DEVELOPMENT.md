@@ -200,10 +200,13 @@ the page is stripped to its results, and every engine's markup differs.
 **Do not add a direct-scraping backend here.** It was tried and removed. Only
 DuckDuckGo's HTML endpoint held up; everything else rate-limited, CAPTCHA'd, or
 rebuilt its markup. Google cannot be scraped at all — it gates `/search` on the
-JavaScript runtime environment and refuses a real browser engine with a warm
-session on its first request, so no user-agent, cookie, delay, or headless-browser
-trick reaches it. The measurements are in [GJS-PITFALLS.md](GJS-PITFALLS.md); read
-them before proposing an exception.
+JavaScript runtime environment. It renders here because the renderer is a real
+engine that says what it is: **never set a user agent on the WebView.** Google
+checks the engine against the claim, and WebKit claiming to be Firefox is sent to
+`/sorry` on every search; that one line is why Google was thought unreachable.
+The measurements are in [GJS-PITFALLS.md](GJS-PITFALLS.md); read them before
+proposing an exception, and run `make check-engines` after changing anything an
+engine can see.
 
 ---
 
@@ -229,6 +232,7 @@ it happening again.
 make check           # everything below
 make check-freeze    # cancel-per-keystroke must never block the calling thread
 make check-provider  # a page load is issued exactly when it should be
+make check-engines   # live, not part of `check`: each engine answers with results
 ```
 
 `make check-freeze` drives the built provider exactly as GNOME Shell does: it
@@ -242,8 +246,18 @@ again for terms already showing, but again if the user has followed links away
 from the results page (without the last one, retyping your own query while three
 pages deep leaves you stranded there).
 
-Both harnesses import from `dist/`, so they test the shipped artefact rather than
-the TypeScript source. They need the St and Meta typelibs, which live outside the
+`make check-engines` is the only test that talks to the real engines, which is
+why `make check` leaves it out: it needs the network, and what it measures is
+decided on their servers. It starts the real renderer on a private bus and a
+virtual display (`dbus-run-session`, `xvfb-run`) with a fresh profile, searches
+each engine three times, and fails unless every search ends `ready` — not merely
+reaches it, since Google's first page can navigate itself on to `/sorry`.
+`SDS_CHECK_ENGINES=google` narrows it; `SDS_CHECK_FRAMES=<dir>` keeps each
+result's last frame as a PNG, which is the quickest way to see what a stylesheet
+change did.
+
+Both of the other harnesses import from `dist/`, so they test the shipped
+artefact rather than the TypeScript source. They need the St and Meta typelibs, which live outside the
 default search path; the Makefile supplies them.
 
 Everything else is verified by driving a nested session (`make nested`), because
@@ -266,8 +280,10 @@ section that hides — only exists inside a running Shell.
    stays where it was
 6. Set "Show web results" to "Only when nothing else matched": a query matching an
    app hides the section entirely; a query nothing else matches shows it
-7. Switch the engine to Google in Extension Settings on a flagged network — the
-   page is replaced by the "refusing this network" notice with a DuckDuckGo button
+7. Switch the engine to Google in Extension Settings: its results render, in its
+   dark palette if the theme is dark, with the weather card and AI overview
+   readable. On a flagged network (a VPN exit) the check page shows instead, with
+   a bar above it saying what it is
 
 ### The renderer on its own
 

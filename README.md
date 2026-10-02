@@ -252,17 +252,17 @@ stayed reliable: Mojeek rate-limits to roughly one query per 30–60 seconds per
 IP, Brave's markup is build-hashed and breaks on every deploy, and Bing and
 Startpage answer with CAPTCHAs.
 
-Google is worth spelling out, because "just render the JavaScript" is such an
-obvious idea. Its response to a scripted client is 168 characters of redirect
-notice with no result data in it at all, and adding a full Chrome header set,
-cookie jar, and warm session returns the byte-identical page. Rendering it in a
-real browser engine does not help either: WebKitGTK on a rested IP loads
-`google.com` perfectly and is then refused at `/search` on the *first* request.
-The gate is on the JavaScript runtime environment, not on behaviour, so no amount
-of simulated human activity reaches it. Google stays selectable because on an
-unflagged network it works; when it does not, the extension says so rather than
-pretending. The full measurements are in
-[docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md).
+Google is worth spelling out, because it cannot be scraped and yet it works
+here. Its response to a scripted client is 168 characters of redirect notice
+with no result data in it at all, and a full Chrome header set, cookie jar and
+warm session return the byte-identical page. What it serves a real browser
+engine depends on whether that engine tells the truth about itself: the results
+page runs a script that checks the engine against the user agent, and WebKit
+claiming to be Firefox or Chrome is sent to its "unusual traffic" page on the
+first search, every time. The renderer sends WebKit's own user agent, and gets
+results. A network Google has genuinely flagged (VPN exits in particular) still
+gets the check; the overview then shows it, says what it is, and lets you answer
+it. The full measurements are in [docs/GJS-PITFALLS.md](docs/GJS-PITFALLS.md).
 
 ### The results page, inside the overview
 
@@ -293,11 +293,12 @@ on the WebView. Measured on a 812×464 page: one wheel notch shows in the overvi
   classes, and the stylesheet injected into the page takes its colours and font
   from the running GTK theme (`theme_base_color`, the `:link` colour,
   `gtk-font-name`), so the page matches whatever the rest of the desktop looks like.
-- **Engine:** DuckDuckGo's HTML endpoint renders reliably. Google is selectable,
-  but from a flagged network (VPN exits in particular) it answers `/sorry`
-  ("unusual traffic") even with a persistent cookie profile and a browser user
-  agent; the renderer detects that page, stops, and the overview offers DuckDuckGo
-  or your browser. It does not attempt to get past the check.
+- **Engine:** DuckDuckGo or Google; both render reliably. Google is asked for
+  the palette that matches your theme, so its own widgets (the weather card, the
+  AI overview) stay readable in dark mode. From a network Google has flagged (VPN
+  exits in particular) it answers with its "unusual traffic" check instead; the
+  overview shows that page as it is, with a bar saying what it is, and answering
+  it continues the search. Nothing tries to get past the check for you.
 
 ---
 

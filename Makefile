@@ -13,6 +13,7 @@
 #   make check-resources - Every resource:/// import resolves to a real file
 #   make check-freeze - Regression test: cancel-per-keystroke must never block
 #   make check-provider - Regression test: when a page load is (and is not) issued
+#   make check-engines - Live: each engine answers the renderer with results (network)
 #   make pack         - Package extension into .zip for extensions.gnome.org
 #   make deb          - Build the .deb (system-scope install)
 #   make rpm          - Build the .rpm (system-scope install)
@@ -27,7 +28,7 @@ EXT_DIR    := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 SCHEMA_DIR := $(DIST)/schemas
 
 .PHONY: build install enable disable restart nested nested-headless schemas \
-        check check-freeze check-provider check-resources pack deb rpm repos verify-repos clean logs
+        check check-freeze check-provider check-resources check-engines pack deb rpm repos verify-repos clean logs
 
 # St and Meta ship outside the default typelib search path.
 SHELL_TYPELIBS := /usr/lib/gnome-shell:$(firstword $(wildcard /usr/lib/*/mutter-*))
@@ -109,6 +110,17 @@ check-provider: build
 	 timeout $(FREEZE_TIMEOUT) gjs -m scripts/provider-check.js || \
 	 { echo "✗ Provider load decisions are wrong"; exit 1; }
 	@echo "✓ Provider load decisions OK"
+
+# Not part of `check`: it searches the real engines, so it needs the network and
+# measures a decision made on their servers. Run it after touching anything the
+# engine can see — the user agent, headers, the profile — and whenever an engine
+# starts looking blocked. A private bus and a virtual display keep the renderer
+# it starts away from the desktop's. Pass SDS_CHECK_FRAMES=<dir> to keep frames.
+check-engines:
+	@echo "→ Searching each engine through the renderer..."
+	@NO_AT_BRIDGE=1 timeout 180 dbus-run-session -- xvfb-run -a gjs -m scripts/engine-check.js || \
+	 { echo "✗ An engine did not answer with results"; exit 1; }
+	@echo "✓ Every engine answered with results"
 
 pack: build
 	@echo "→ Packaging extension..."
