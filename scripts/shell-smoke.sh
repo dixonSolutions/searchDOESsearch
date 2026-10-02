@@ -25,11 +25,17 @@ if [[ ! -e /run/.containerenv && ! -e /.dockerenv && -z "${CI:-}" ]]; then
   exit 2
 fi
 
-[[ -f "$REPO_DIR/dist/$UUID/metadata.json" ]] || make -C "$REPO_DIR" build
+# The zip, not dist/: it is what extensions.gnome.org and the GitHub release
+# ship, and a module left out of it installs cleanly and then fails to import.
+make -C "$REPO_DIR" pack >/dev/null
+ZIP="$REPO_DIR/$UUID.shell-extension.zip"
 EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
 mkdir -p "$EXT_DIR"
 rm -rf "${EXT_DIR:?}/$UUID" "${EXT_DIR:?}/$DRIVER"
-cp -a "$REPO_DIR/dist/$UUID" "$REPO_DIR/scripts/$DRIVER" "$EXT_DIR/"
+python3 -m zipfile -e "$ZIP" "$EXT_DIR/$UUID"
+# What the Shell does to an extension it installs from extensions.gnome.org.
+glib-compile-schemas --strict "$EXT_DIR/$UUID/schemas"
+cp -a "$REPO_DIR/scripts/$DRIVER" "$EXT_DIR/"
 # The driver is a harness, not a compatibility claim, so it claims whichever
 # Shell is installed: a version added to metadata.json must never leave the
 # driver OUT_OF_DATE, enable() unrun and this script waiting for a DONE line.

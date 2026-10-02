@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# Two pushes to main in quick succession would both see the version untagged
+# and race each other to the release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package:
     runs-on: ubuntu-latest
@@ -83,9 +89,10 @@ jobs:
           # Every module the Shell imports at runtime, plus the renderer the
           # extension spawns. A missing one produces an extension that installs
           # and then does nothing, which is the failure this check exists for.
-          for file in extension.js searchProvider.js section.js pageView.js \
-                      rendererClient.js browserLauncher.js prefs.js \
-                      panel/sds-renderer.js stylesheet.css metadata.json \
+          # Every module the build emitted is listed by what it emitted, so a new
+          # one is checked without anyone remembering to add it here.
+          modules=$(cd dist/search-does-search@searchdoessearch.github.io && find . -name '*.js' -printf '%P\n')
+          for file in $modules stylesheet.css metadata.json \
                       schemas/org.gnome.shell.extensions.search-does-search.gschema.xml; do
             grep -F "$file" contents.txt || { echo "::error::$file missing from $ZIP"; exit 1; }
           done
@@ -127,7 +134,7 @@ jobs:
   # Every Shell version metadata.json claims, live, before anything is published.
   compat:
     needs: package
-    if: needs.package.outputs.release == 'true' || inputs.publish_ego
+    if: needs.package.outputs.release == 'true' || (inputs.publish_ego && github.ref == 'refs/heads/main')
     uses: ./.github/workflows/compat.yml
 
   github-release:
@@ -163,7 +170,7 @@ jobs:
     needs: [package, compat, github-release]
     if: >-
       !cancelled() && needs.compat.result == 'success' &&
-      (needs.github-release.result == 'success' || inputs.publish_ego)
+      (needs.github-release.result == 'success' || (inputs.publish_ego && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     # `gnome-extensions upload` is new in GNOME 49; ubuntu-latest ships 46.
     container: ubuntu:26.04

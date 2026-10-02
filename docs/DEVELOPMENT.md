@@ -311,7 +311,7 @@ section that hides — only exists inside a running Shell.
    scroll position you left
 5. Middle-click or Ctrl+click a link: it goes to the browser instead, and the view
    stays where it was
-6. Set "Show web results" to "Only when nothing else matched": a query matching an
+6. With "In the overview" at "As a fallback" (the default): a query matching an
    app hides the section entirely; a query nothing else matches shows it
 7. Switch the engine to Google in Extension Settings: its results render, in its
    dark palette if the theme is dark, with the weather card and AI overview

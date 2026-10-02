@@ -1,6 +1,7 @@
 /**
  * Drives Search Does Search the way a person would — open the overview, type,
- * read the page, turn the extension off and on again — inside the headless
+ * read the page, open the search window and type there, turn the extension off
+ * and on again — inside the headless
  * Shell that scripts/shell-smoke.sh starts. Every line it prints starts with
  * SDS-SMOKE; the script fails on any FAIL line, or on no DONE line at all.
  *
@@ -83,13 +84,36 @@ async function search(terms, shot) {
   await sleep(1);
 }
 
+/** The extension object behind SDS; the window is reached through its own toggle. */
+const sds = () => Main.extensionManager.lookup(SDS)?.stateObj;
+
+async function searchWindow(terms, shot) {
+  // The shortcut's handler, without the keyboard: the headless Shell has no
+  // seat to press Super+Shift+S on. Its version-specific paths (the grab
+  // probe, cursors, the blur) are what this exercises.
+  sds()._toggleWindow();
+  await until('the search window to open', () => sds()._window?.isOpen, 5);
+  sds()._window._entry.set_text(terms);
+  await sleep(10);
+  await screenshot(shot);
+  sds()._toggleWindow();
+  await until('the search window to close', () => !sds()._window.isOpen, 5);
+  await sleep(1);
+}
+
 async function drive() {
   say(`GNOME Shell ${Config.PACKAGE_VERSION}`);
   await until('Search Does Search to be ACTIVE', () => stateName() === 'ACTIVE', 10);
   say('enabled: ACTIVE');
+  // The default only shows the page when nothing else matched, and an app or
+  // a settings panel may match; the screenshots are for seeing the page.
+  sds().getSettings().set_string('section-visibility', 'always');
 
   await search('gnome shell', 'search.png');
   say('search: renderer started');
+
+  await searchWindow('gnome extensions', 'search-window.png');
+  say('search window: opened, searched, closed');
 
   Main.extensionManager.disableExtension(SDS);
   await until('Search Does Search to be INACTIVE', () => stateName() === 'INACTIVE', 10);
