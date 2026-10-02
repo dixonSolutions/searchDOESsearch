@@ -23,8 +23,18 @@ export interface ResultView {
 export interface SearchProviderOptions {
   /** Which engine's page is rendered: a value of the `engine` setting. */
   engine: string;
-  /** Loads the page. Absent in the headless harness. */
-  renderer?: {search(query: string, engine: string): void};
+  /**
+   * Whether this provider answers searches at all. The overview's provider is
+   * registered for the life of the extension and switched off here, so turning
+   * the overview off and on again does not reshuffle the Shell's sections.
+   */
+  active?: boolean;
+  /**
+   * Loads the page. Absent in the headless harness. `lastSearch` is what the
+   * renderer is showing, when it can say — it is shared, and another provider
+   * may have loaded something else since this one last did.
+   */
+  renderer?: {search(query: string, engine: string): void; readonly lastSearch?: readonly [string, string] | null};
   /** Builds the overview actor. Absent in the headless harness. */
   createView?: () => ResultView;
 }
@@ -91,7 +101,7 @@ export class SearchProvider {
    */
   getInitialResultSet(terms: string[], cancellable: Gio.Cancellable): Promise<string[]> {
     const query = terms.join(' ').trim();
-    if (!query || cancellable.is_cancelled()) {
+    if (!query || cancellable.is_cancelled() || this._options.active === false) {
       this._cancelDebounce();
       return Promise.resolve([]);
     }
@@ -155,7 +165,7 @@ export class SearchProvider {
       // The same query coming back (the overview was reopened) keeps the page —
       // unless the user followed links from it, in which case the results page
       // is no longer what is showing and settling has to bring it back.
-      const reloading = query !== this._rendered || (this._view?.navigated ?? false);
+      const reloading = query !== this._showing() || (this._view?.navigated ?? false);
       if (reloading) {
         this._rendered = query;
         this._lastRenderAt = GLib.get_monotonic_time() / 1000;
@@ -166,9 +176,27 @@ export class SearchProvider {
     });
   }
 
+  /** The query whose results page the renderer holds for this provider's engine. */
+  private _showing(): string {
+    const last = this._options.renderer?.lastSearch;
+    if (last === undefined) return this._rendered;
+    return last && last[1] === this._options.engine ? last[0] : '';
+  }
+
   private _cancelDebounce(): void {
     if (this._debounceId) GLib.source_remove(this._debounceId);
     this._debounceId = 0;
+  }
+
+  /**
+   * The view this provider feeds has left the screen. What it loaded stays
+   * loaded — coming back to the same terms still finds them showing — but a
+   * load that has only been scheduled is dropped: the other way in drives the
+   * same renderer, and a timer left running here would replace the page the
+   * user is now looking at with this query's.
+   */
+  cancelPendingSearch(): void {
+    this._cancelDebounce();
   }
 
   destroy(): void {

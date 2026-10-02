@@ -12,11 +12,13 @@ Search Does Search is a GNOME Shell extension that hooks into the Activities sea
 src/
 ├── extension.ts        ← Entry point. Lifecycle; wires provider, renderer client and view.
 ├── searchProvider.ts   ← GNOME Search Provider: one result, debounced render requests.
-├── pageView.ts         ← The overview actor: frame texture, input forwarding, header, notices.
+├── pageView.ts         ← The page actor: frame texture, input forwarding, header, notices. Hosted by
+│                          the overview or by the search window (its ViewHost says which).
+├── searchWindow.ts     ← The shortcut's search window: entry + a PageView, driven by a private provider.
 ├── section.ts          ← The Shell's section for us: provider column, order, visibility.
 ├── rendererClient.ts   ← Spawns the renderer, D-Bus proxy, fans out Frame/State/Nav/Launched/Refused.
 ├── browserLauncher.ts  ← Opens result URLs in the default browser.
-└── prefs.ts            ← Preferences window (four enum keys).
+└── prefs.ts            ← Preferences window, including the shortcut recorder.
 panel/
 └── sds-renderer.js     ← Off-screen WebKit renderer: frames out, input in (own process).
 stylesheet.css          ← Loaded by the Shell on enable; scoped to this section's own classes.
@@ -194,11 +196,55 @@ activates the result, which opens the whole search in the browser.
 
 ### GSettings for preferences
 
-Schema `org.gnome.shell.extensions.search-does-search`, four enum keys:
+Schema `org.gnome.shell.extensions.search-does-search`:
 `engine` (duckduckgo | google), `link-mode` (contained | browser),
-`section-visibility` (always | no-other-results) and `section-placement`
-(top | top-when-alone | default). The former `searxng-instance`, `panel-*`,
+`section-visibility` (always | no-other-results | never), `section-placement`
+(top | top-when-alone | default), `search-window` (boolean) and
+`search-window-shortcut` (an accelerator list the window manager reads itself,
+via `Main.wm.addKeybinding`), `search-window-style` (full | floating), and
+`search-window-position` / `search-window-size` (both `(ii)`, `(-1, -1)` meaning
+"default") for where the floating window was left: stage coordinates, and the
+card's width with the page's height, clamped to the monitor's work area on every
+open. The former `searxng-instance`, `panel-*`,
 `max-results`, `search-engine` and `browser-command` keys are gone.
+
+### Two ways in, one renderer
+
+The overview and the search window are separate `SearchProvider` instances — the
+overview's registered with the Shell, the window's driven from its own entry —
+each with its own `PageView`, both talking to the one renderer process. Two
+consequences follow, and both are tested in `scripts/provider-check.js`:
+
+* "Is this query already loaded?" is answered from `RendererClient.lastSearch`,
+  not from the provider's memory of what it last asked for: the other provider
+  may have loaded something since. Otherwise the overview reopens showing the
+  window's page under its own terms.
+* A `PageView` that sees a renderer state for a query other than its own drops
+  its page back to the skeleton, because the frames it holds now belong to the
+  other view's search.
+
+Whichever way in is leaving also drops the load it has only scheduled
+(`SearchProvider.cancelPendingSearch`, called when the overview starts hiding
+and when the window closes). The debounce outlives both, so a timer left running
+would load the terms of the view that just went away into the one that replaced
+it — which the other view reads as another query's state and answers with a
+skeleton it has nothing to replace.
+
+The frame claims the renderer's page size whenever it is mapped (not only when
+its allocation changes), because the two views are different sizes and an
+overview view keeps its allocation across closes.
+
+Turning the overview off (`never`) leaves the provider registered but answering
+nothing, so switching it back on does not reshuffle the Shell's section order.
+The window grabs the keyboard with `Main.pushModal` in `POPUP` action mode; its
+keybinding is registered for `NORMAL | OVERVIEW | POPUP`, so the same chord
+closes it, and the handler refuses to open over someone else's popup. The
+floating style is modal too — Shell chrome only gets key focus under a grab — so
+its backdrop is transparent rather than absent, and still closes it on a click.
+A drag takes a second, nested `global.stage.grab()` on the card and reads motion
+in `captured-event`, so the page under the pointer never sees it. Cursors are
+per-actor on Shell 50 (`set_cursor_type`) and global before it
+(`global.display.set_cursor`); `setCursor()` in searchWindow.ts picks.
 
 ### Reaching into the Shell's search results
 

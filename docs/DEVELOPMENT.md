@@ -88,6 +88,7 @@ Useful flags:
 | `--headless` | No viewer window — for SSH, a locked screen, or automated capture. |
 | `--gdr[=PORT]` | `--headless` only: run `gdrd` against the session so screenshot/input tooling can drive it. |
 | `--no-build` | Start a session against whatever is already installed. |
+| `--isolated` | Install into a private `XDG_DATA_HOME` instead of `~/.local/share`, and keep settings in a private dconf database (`~/.config/dconf/sds_nested`), so neither the host's installed copy nor its settings — nor another worktree's nested session — is touched. Loads no other user extensions. |
 | `--debug` | `SDS_DEBUG=1` in the session: frame timings and raw scroll events. |
 | `--timeout N` | Shut down after N seconds, for scripted runs. |
 
@@ -160,7 +161,8 @@ search-does-search/
 ├── src/
 │   ├── extension.ts        ← enable() / disable() lifecycle
 │   ├── searchProvider.ts   ← GNOME Search Provider (one result: the page)
-│   ├── pageView.ts         ← overview actor: frame texture, input forwarding, header
+│   ├── pageView.ts         ← page actor: frame texture, input forwarding, header
+│   ├── searchWindow.ts     ← the shortcut's search window (entry + page view)
 │   ├── rendererClient.ts   ← spawns/talks to the renderer over D-Bus
 │   ├── section.ts          ← provider column, section order, conditional visibility
 │   ├── browserLauncher.ts  ← default browser launch

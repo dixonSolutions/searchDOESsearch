@@ -122,15 +122,13 @@ check-engines:
 	 { echo "✗ An engine did not answer with results"; exit 1; }
 	@echo "✓ Every engine answered with results"
 
+# Every module the build emits rides along, so a new one cannot be left out of the
+# zip (extension.js and prefs.js are packed by name). Expanded after `build` runs.
 pack: build
 	@echo "→ Packaging extension..."
 	gnome-extensions pack $(DIST) \
 		--schema=schemas/org.gnome.shell.extensions.search-does-search.gschema.xml \
-		--extra-source=browserLauncher.js \
-		--extra-source=pageView.js \
-		--extra-source=rendererClient.js \
-		--extra-source=searchProvider.js \
-		--extra-source=section.js \
+		$(foreach js,$(filter-out extension.js prefs.js,$(notdir $(wildcard $(DIST)/*.js))),--extra-source=$(js)) \
 		--extra-source=stylesheet.css \
 		--extra-source=panel \
 		--force \

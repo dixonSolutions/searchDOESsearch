@@ -280,7 +280,9 @@ export class SectionPlacement {
         `visibility=${visibility} placement=${placement} siblings=[${siblings}]`);
     }
 
-    const show = visibility !== 'no-other-results' || alone;
+    // 'never' is also enforced upstream (the provider answers nothing), but a
+    // section the Shell built before the switch must not be un-hidden here.
+    const show = visibility === 'always' || (visibility === 'no-other-results' && alone);
     // Only ever un-hide what this hid: an empty section is hidden by the Shell
     // itself, and forcing it visible would show an empty frame.
     if (!show) {

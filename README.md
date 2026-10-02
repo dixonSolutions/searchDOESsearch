@@ -30,7 +30,9 @@ paragraph, settle the argument, carry on with what you were doing.
 - Shows the engine's **rendered results page inside the overview** — scroll it, click it, use the keyboard in it
 - **Follows the links you click, in place**, with a back control counting how many pages deep you are — or hands them to your browser, whichever you set. A back control is the only navigation there is: this is a glance, not a session
 - Opens in your **default browser** when you ask it to (Firefox, Chrome, Brave, Chromium — anything)
-- Decides for itself **when to appear**: every search, or only when nothing else matched
+- **Two ways in, each a switch of its own**: a search window that **Super+Shift+S**
+  (or any shortcut you set) opens over whatever you are doing, and the overview's
+  own search — for every query, only when nothing else matched (the default), or never
 - Queries never touch a third party you did not choose
 - Debounces keystrokes, and warms the renderer while the overview opens
 - Works on X11 and Wayland
@@ -242,10 +244,40 @@ leaves it installed for everyone else.
    the results page, that page once you have followed a link. So does
    middle-click or **Ctrl+click** on any link.
 
-Four settings, all in Extension Settings: which engine's page is rendered
-(DuckDuckGo or Google), whether links open in the overview or in your browser,
-whether the section shows for every search or only when nothing else matched, and
-whether it is moved above the other sections.
+### The search window
+
+Press **Super+Shift+S** anywhere — over a full-screen app, from the overview —
+and a search box drops in over what you were doing. Type, and the same
+results page grows under it. **Escape**, a click outside it, or the shortcut
+again closes it; **Enter** hands the search to your browser; **Down** or **Tab**
+moves the keyboard into the page. Reopening it keeps your last search, selected,
+so the page is already there and typing replaces it.
+
+Two styles:
+
+- **Full screen** (the default) frosts the desktop and centres a large card on it.
+- **Floating window** is a smaller card over a desktop left as it is. Drag it by
+  its edge or the handle on top, resize it from the bottom-right corner; it opens
+  where you left it, at the size you left it, pulled back on screen if that
+  monitor is gone. A click outside it still closes it, as Escape does: the Shell
+  only gives the keyboard to its own widgets while they hold it.
+
+### Settings
+
+All in Extension Settings:
+
+| Setting | Choices | Default |
+|---|---|---|
+| Search window | on / off | on |
+| Shortcut | any chord with Super, Ctrl or Alt; Backspace in the recorder removes it | Super+Shift+S |
+| Style | full screen / floating window | full screen |
+| Floating window size and position | remembered; Reset forgets them | centred |
+| In the overview | every search / as a fallback (only when nothing else matched) / never | as a fallback |
+| Engine | DuckDuckGo / Google | DuckDuckGo |
+| Open links | in place / in your browser | in place |
+| Put them first (overview) | always / when nothing else matched / where GNOME puts it | when nothing else matched |
+
+The two ways in are independent: either, both, or (for a quiet week) neither.
 
 **Why DuckDuckGo's page?** Because of the engines tested, only its HTML endpoint
 stayed reliable: Mojeek rate-limits to roughly one query per 30–60 seconds per
@@ -322,7 +354,8 @@ See [docs/PUBLISHING.md](docs/PUBLISHING.md) for the submission process to exten
 src/
 ├── extension.ts        ← Extension lifecycle (enable / disable)
 ├── searchProvider.ts   ← GNOME Search Provider API implementation
-├── pageView.ts         ← The overview widget: page texture, input forwarding, back control
+├── pageView.ts         ← The page widget: texture, input forwarding, back control (overview or window)
+├── searchWindow.ts     ← The shortcut's frosted search window
 ├── section.ts          ← Where the section sits in the results, and whether it shows
 ├── rendererClient.ts   ← Spawns and talks to the renderer over D-Bus
 ├── browserLauncher.ts  ← Default browser launch
