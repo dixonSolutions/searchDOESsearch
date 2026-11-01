@@ -58,8 +58,18 @@ install: build
 	cp -r $(DIST)/. "$(EXT_DIR)/"
 	@echo "✓ Extension installed"
 
+# The Shell scans for extensions only when a session starts, so right after a
+# first `make install` it reports the UUID as missing. Say why instead.
 enable:
-	gnome-extensions enable $(UUID)
+	@gnome-extensions enable $(UUID) || { \
+		if [ -d "$(EXT_DIR)" ]; then \
+			echo "✗ The extension is installed, but GNOME Shell only looks for new"; \
+			echo "  extensions when a session starts. Log out and back in (on X11,"; \
+			echo "  'make restart' also works), then run 'make enable' again."; \
+		else \
+			echo "✗ The extension is not installed. Run 'make install' first."; \
+		fi; \
+		exit 1; }
 	@echo "✓ Extension enabled — open Activities and start typing"
 
 disable:
